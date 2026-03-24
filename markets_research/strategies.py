@@ -39,10 +39,13 @@ class ThresholdEdgeStrategy(Strategy):
         return None
 
     def fit(self, train_events: list[dict[str, Any]]) -> None:
-        # Count qualifying events per market in the LAST quarter of training data
-        # (most temporally similar to the upcoming test fold).
+        # Use a window matching ~one test fold's worth of events (~25k at 100k rows).
+        # This gives count ≈ qualifying_events_per_test_fold, so setting
+        # size = position_cap / count fills the cap using ALL qualifying events,
+        # maximising trade density AND total contracts simultaneously.
+        FOLD_WINDOW = 25000
         n = len(train_events)
-        window = train_events[max(0, n - n // 4):]  # last ~25% of training
+        window = train_events[max(0, n - FOLD_WINDOW):]
         counts: dict[str, int] = defaultdict(int)
         for event in window:
             if float(event["price_yes"]) <= self.buy_yes_below:
@@ -50,11 +53,12 @@ class ThresholdEdgeStrategy(Strategy):
 
         self._market_sizes = {}
         for market_id, count in counts.items():
-            if count >= 10:
-                # Optimal: fill cap in exactly `count` trades
-                optimal = self.position_cap / count
-                # Cap at default_size; don't go below 0.01 to avoid dust orders
-                self._market_sizes[market_id] = max(0.01, min(self.order_size, optimal))
+            if count >= 5:
+                # size = cap / count fills the cap in exactly `count` trades.
+                # Allow sizes above default (0.5) so data-limited markets hit cap too.
+                # Hard ceiling of 2.0 prevents outsized swings from very thin markets.
+                size = self.position_cap / count
+                self._market_sizes[market_id] = max(0.01, min(2.0, size))
 
     def on_event(self, state: dict[str, Any]) -> Order | None:
         p = float(state["yes_price"])
