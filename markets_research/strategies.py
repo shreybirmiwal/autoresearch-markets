@@ -132,10 +132,69 @@ class PriceBandBuyYesStrategy(Strategy):
         return None
 
 
+@dataclass
+class MeanReversionBandYesStrategy(Strategy):
+    """Buy YES when price is BOTH in the profitable (0.20, 0.45] band AND z-score below rolling mean.
+    Mechanism: mean_reversion YES in (0.2, 0.4] earns 0.685 avg PnL vs threshold_edge's 0.466.
+    The extra discriminator is that z-score below mean filters out markets that are already trending down.
+    Exit when price recovers above rolling mean (signal reversal) or hits 0.65 take-profit.
+    Per-market rolling history to avoid cross-market contamination.
+    """
+    name: str = "mean_rev_band_yes"
+    window: int = 30
+    z_entry: float = 1.0
+    buy_yes_low: float = 0.20
+    buy_yes_high: float = 0.45
+    exit_above: float = 0.65
+    order_size: float = 1.0
+
+    def __post_init__(self) -> None:
+        self._market_history: dict[str, deque] = {}
+
+    def reset(self) -> None:
+        self._market_history.clear()
+
+    def on_event(self, state: dict[str, Any]) -> Order | None:
+        mid = state["market_id"]
+        p = float(state["yes_price"])
+        pos = float(state.get("position_yes_contracts", 0.0))
+
+        if mid not in self._market_history:
+            self._market_history[mid] = deque(maxlen=self.window)
+        hist = self._market_history[mid]
+        hist.append(p)
+
+        # Exit: take profit or signal reversal
+        if pos > 0 and p >= self.exit_above:
+            return Order(market_id=mid, side="yes", contracts=-pos, reason=self.name + "_exit")
+
+        if len(hist) < self.window:
+            return None
+
+        arr = np.array(hist, dtype=np.float64)
+        mean = arr.mean()
+        std = arr.std()
+        if std <= 1e-9:
+            return None
+
+        z = (p - mean) / std
+
+        # Exit: price has recovered above rolling mean
+        if pos > 0 and z >= 0.0:
+            return Order(market_id=mid, side="yes", contracts=-pos, reason=self.name + "_exit_mean")
+
+        # Enter: price in profitable band AND below rolling mean
+        if self.buy_yes_low < p <= self.buy_yes_high and z <= -self.z_entry:
+            return Order(market_id=mid, side="yes", contracts=self.order_size, reason=self.name)
+
+        return None
+
+
 def default_strategy_registry() -> list[Strategy]:
     return [
         ThresholdEdgeStrategy(),
         MeanReversionStrategy(),
         PriceBandBuyYesStrategy(),
+        MeanReversionBandYesStrategy(),
     ]
 
