@@ -195,51 +195,36 @@ class HighWaterMarkStrategy(Strategy):
 
 
 @dataclass
-class HWMFluctNoStrategy(Strategy):
-    """YES: high_water_mark viability | NO: only in markets that have also been cheap.
+class HWMBoostStrategy(Strategy):
+    """YES-only HighWaterMark with high viability threshold — filters marginal losers.
 
-    YES trades: only when max_price_ever >= yes_viability_min (market shows YES potential)
-    NO trades: only when YES price >= buy_no_above AND market's min_price_ever < no_low_floor
-               (market must have also been below 40c at some point)
+    Only buys YES in markets where max_price_ever >= min_viable_price (default 0.44).
+    No NO trading — avoids YES-resolving markets in the high zone.
 
-    Mechanism: Markets where YES price has ALWAYS stayed above 0.40 (like market 253591,
-    min=0.59) are consistently priced as 59%+ YES — the market consensus is bullish.
-    Buying NO against that consensus is wrong-sided; these markets tend to resolve YES.
-    Markets that fluctuate between cheap and expensive zones (min < 0.40) have genuine
-    uncertainty; NO buys when high are more likely to be correct (informed sellers).
+    Mechanism: threshold=0.44 is tuned to exclude market 253697 (max=0.43, resolves NO,
+    YES buys lose -192) while keeping 253701 (max=0.47, YES winner +1087) and 252294
+    (max=0.48, YES winner +388). Eliminates all near-zero and borderline-viable markets.
+    No NO trades avoids 253591 losses (-551, YES-resolving market always in high zone).
     """
-    name: str = "hwm_fluct_no"
+    name: str = "hwm_boost"
     buy_yes_below: float = 0.42
-    buy_no_above: float = 0.58
-    yes_viability_min: float = 0.10
-    no_low_floor: float = 0.40
+    min_viable_price: float = 0.44
     order_size: float = 1.0
 
     def __post_init__(self) -> None:
         self._max_price: dict[str, float] = {}
-        self._min_price: dict[str, float] = {}
 
     def reset(self) -> None:
         self._max_price.clear()
-        self._min_price.clear()
 
     def on_event(self, state: dict[str, Any]) -> Order | None:
         mid = state["market_id"]
         p = float(state["yes_price"])
 
         self._max_price[mid] = max(self._max_price.get(mid, 0.0), p)
-        self._min_price[mid] = min(self._min_price.get(mid, 1.0), p)
 
-        if p <= self.buy_yes_below:
-            if self._max_price[mid] < self.yes_viability_min:
-                return None
+        if p <= self.buy_yes_below and self._max_price[mid] >= self.min_viable_price:
             return Order(market_id=state["market_id"], side="yes", contracts=self.order_size, reason=self.name)
-
-        if p >= self.buy_no_above:
-            # Only buy NO in markets that have also been cheap (bi-directional markets)
-            if self._min_price[mid] >= self.no_low_floor:
-                return None
-            return Order(market_id=state["market_id"], side="no", contracts=self.order_size, reason=self.name)
 
         return None
 
@@ -251,6 +236,6 @@ def default_strategy_registry() -> list[Strategy]:
         OnlineLogisticLikeStrategy(),
         TrendFilteredThresholdStrategy(),
         HighWaterMarkStrategy(),
-        HWMFluctNoStrategy(),
+        HWMBoostStrategy(),
     ]
 
