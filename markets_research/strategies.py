@@ -205,6 +205,24 @@ class LargeTradeFollowerStrategy(Strategy):
         return None
 
 
+@dataclass
+class PureYesDeepValueStrategy(Strategy):
+    """Focus only on the best win bucket: YES trades at prices below 0.20.
+    All top win contexts in report.json are YES at (-0.001, 0.2] - concentrate there."""
+    name: str = "pure_yes_deep_value"
+    buy_yes_below: float = 0.20
+    order_size: float = 1.0
+
+    def reset(self) -> None:
+        return None
+
+    def on_event(self, state: dict[str, Any]) -> Order | None:
+        p = float(state["yes_price"])
+        if p <= self.buy_yes_below:
+            return Order(market_id=state["market_id"], side="yes", contracts=self.order_size, reason=self.name)
+        return None
+
+
 def default_strategy_registry() -> list[Strategy]:
     return [
         ThresholdEdgeStrategy(),
@@ -213,4 +231,5 @@ def default_strategy_registry() -> list[Strategy]:
         AsymmetricThreshold80Strategy(),
         Yes36NO80Strategy(),
         LargeTradeFollowerStrategy(),
+        PureYesDeepValueStrategy(),
     ]
