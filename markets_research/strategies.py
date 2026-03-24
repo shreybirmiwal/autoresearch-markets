@@ -154,51 +154,58 @@ class TrendFilteredThresholdStrategy(Strategy):
 
 
 @dataclass
-class ExitOnReverseStrategy(Strategy):
-    """Buy YES when cheap; exit when price rises and signal reverses.
+class CapitalRecycleStrategy(Strategy):
+    """Recycle cap-saturated cheap positions when price enters the profitable sweet spot.
 
-    Mechanism: After buying YES at a cheap price (e.g., 0.30), if the market
-    moves significantly toward YES (price rises above 0.55), we've captured
-    most of the edge. Selling at 0.55 locks in ~0.25 profit per contract and
-    frees the capital to buy more cheap YES in other markets. This improves
-    capital efficiency — instead of tying up capital waiting for binary
-    resolution, we recycle it into new edges.
-    Also applies to NO side: exit NO position when price drops below 0.45.
+    Mechanism: Markets often start with many <0.20 YES events that fill our 500-contract
+    cap. When price rises to (0.20, 0.42] sweet spot (avg pnl +0.41), we're capped and
+    miss these high-edge trades. Recycling: once per sweet-spot entry, if near cap, sell
+    some old contracts (originally bought cheap at <0.20 with negative expected value
+    of -0.016) to make room for new sweet-spot buys at +0.41 expected. The sell itself
+    is profitable (realized gain vs negative expected holding value).
     """
-    name: str = "exit_on_reverse"
+    name: str = "capital_recycle"
     buy_yes_below: float = 0.42
-    exit_yes_above: float = 0.55
+    sweet_low: float = 0.20
     buy_no_above: float = 0.58
-    exit_no_below: float = 0.45
+    recycle_threshold: float = 380.0
+    sell_down_to: float = 200.0
     order_size: float = 1.0
 
+    def __post_init__(self) -> None:
+        self._recycled: dict[str, bool] = {}
+        self._in_sweet: dict[str, bool] = {}
+
     def reset(self) -> None:
-        return None
+        self._recycled.clear()
+        self._in_sweet.clear()
 
     def on_event(self, state: dict[str, Any]) -> Order | None:
         p = float(state["yes_price"])
-        pos_yes = float(state["position_yes_contracts"])
-        pos_no = float(state["position_no_contracts"])
+        pos = float(state["position_yes_contracts"])
+        mid = state["market_id"]
 
-        # Exit YES position if price has risen to profitable zone
-        if pos_yes > 0 and p >= self.exit_yes_above:
-            return Order(market_id=state["market_id"], side="yes",
-                         contracts=-pos_yes, reason=self.name)
+        in_sweet = self.sweet_low <= p <= self.buy_yes_below
+        was_in_sweet = self._in_sweet.get(mid, False)
 
-        # Exit NO position if price has fallen to profitable zone
-        if pos_no > 0 and p <= self.exit_no_below:
-            return Order(market_id=state["market_id"], side="no",
-                         contracts=-pos_no, reason=self.name)
+        # Reset recycle flag when re-entering sweet spot from below
+        if in_sweet and not was_in_sweet:
+            self._recycled[mid] = False
+        self._in_sweet[mid] = in_sweet
 
-        # Entry: buy YES when price is cheap
+        # Recycle: once per sweet-spot entry, sell near-cap cheap contracts
+        if in_sweet and pos >= self.recycle_threshold and not self._recycled.get(mid, False):
+            self._recycled[mid] = True
+            sell_qty = pos - self.sell_down_to
+            return Order(market_id=mid, side="yes", contracts=-sell_qty, reason=self.name)
+
+        # Entry: buy YES in sweet spot or cheap zone
         if p <= self.buy_yes_below:
-            return Order(market_id=state["market_id"], side="yes",
-                         contracts=self.order_size, reason=self.name)
+            return Order(market_id=mid, side="yes", contracts=self.order_size, reason=self.name)
 
         # Entry: buy NO when price is high
         if p >= self.buy_no_above:
-            return Order(market_id=state["market_id"], side="no",
-                         contracts=self.order_size, reason=self.name)
+            return Order(market_id=mid, side="no", contracts=self.order_size, reason=self.name)
 
         return None
 
@@ -209,6 +216,6 @@ def default_strategy_registry() -> list[Strategy]:
         MeanReversionStrategy(),
         OnlineLogisticLikeStrategy(),
         TrendFilteredThresholdStrategy(),
-        ExitOnReverseStrategy(),
+        CapitalRecycleStrategy(),
     ]
 
