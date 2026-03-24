@@ -163,50 +163,36 @@ class LargeTradeFollowerStrategy(Strategy):
 
 
 @dataclass
-class BurstMarketThresholdStrategy(Strategy):
-    """Trade only during same-market burst periods for predictable execution.
+class AboveMarkRecyclerStrategy(Strategy):
+    """Buy YES cheap, sell above 0.5 settlement mark to lock in extra profit and recycle.
 
-    Mechanism: In the backtest, order execution uses the NEXT sequential row's price
-    (regardless of market). When one market is "burst trading" (N consecutive events),
-    the next event is from the same market → execution price is predictable and at the
-    same market's level. By trading only during bursts of low-price markets, we ensure
-    YES buys execute at the low price of the bursting market, not at some random
-    high-price market's price.
+    Mechanism: Settlement is at 0.5 for all positions. Holding a YES position to the
+    mark gives (0.5 - buy_price) profit. But SELLING when the price EXCEEDS 0.5 gives
+    (sell_price - buy_price) > (0.5 - buy_price). If the market then drops back to a
+    low price, re-entering captures another round. This recycling generates profit above
+    what holding-to-mark would capture, while freeing capital for re-entry.
     """
 
-    name: str = "burst_market_threshold"
-    buy_yes_below: float = 0.40
-    buy_no_above: float = 0.60
-    burst_min: int = 2  # require at least this many consecutive same-market events
+    name: str = "above_mark_recycler"
+    buy_yes_below: float = 0.38
+    sell_yes_above: float = 0.55  # above the 0.5 settlement mark = better than holding
     order_size: float = 1.0
 
-    def __post_init__(self) -> None:
-        self._last_market_id: str = ""
-        self._same_market_count: int = 0
-
     def reset(self) -> None:
-        self._last_market_id = ""
-        self._same_market_count = 0
+        return None
 
     def on_event(self, state: dict[str, Any]) -> Order | None:
-        mid = str(state["market_id"])
         p = float(state["yes_price"])
+        pos_yes = float(state["position_yes_contracts"])
 
-        # Track burst count
-        if mid == self._last_market_id:
-            self._same_market_count += 1
-        else:
-            self._same_market_count = 1
-            self._last_market_id = mid
+        # Exit: sell above mark to capture above-mark profit
+        if pos_yes > 0 and p >= self.sell_yes_above:
+            return Order(market_id=state["market_id"], side="yes", contracts=-pos_yes, reason=self.name)
 
-        # Only trade during bursts (same market N consecutive times)
-        if self._same_market_count < self.burst_min:
-            return None
-
+        # Entry: buy cheap YES
         if p <= self.buy_yes_below:
             return Order(market_id=state["market_id"], side="yes", contracts=self.order_size, reason=self.name)
-        if p >= self.buy_no_above:
-            return Order(market_id=state["market_id"], side="no", contracts=self.order_size, reason=self.name)
+
         return None
 
 
@@ -216,6 +202,6 @@ def default_strategy_registry() -> list[Strategy]:
         MeanReversionStrategy(),
         OnlineLogisticLikeStrategy(),
         LargeTradeFollowerStrategy(),
-        BurstMarketThresholdStrategy(),
+        AboveMarkRecyclerStrategy(),
     ]
 
