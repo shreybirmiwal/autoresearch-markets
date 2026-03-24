@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from collections import defaultdict
+from dataclasses import dataclass, field
 from typing import Any
 
 from markets_research.backtest import Order
@@ -24,17 +25,48 @@ class Strategy(ABC):
 
 @dataclass
 class ThresholdEdgeStrategy(Strategy):
+    """Buy YES when price is cheap; use fit() to set per-market order_size that
+    exactly fills the position cap using ALL qualifying events, maximising both
+    trade count (Sharpe) and total contracts (PnL).
+    """
     name: str = "threshold_edge"
     buy_yes_below: float = 0.45
-    order_size: float = 2.0
+    order_size: float = 0.5
+    position_cap: float = 500.0
 
     def reset(self) -> None:
+        self._market_sizes: dict[str, float] = {}
         return None
+
+    def fit(self, train_events: list[dict[str, Any]]) -> None:
+        # Count qualifying events per market in the LAST quarter of training data
+        # (most temporally similar to the upcoming test fold).
+        n = len(train_events)
+        window = train_events[max(0, n - n // 4):]  # last ~25% of training
+        counts: dict[str, int] = defaultdict(int)
+        for event in window:
+            if float(event["yes_price"]) <= self.buy_yes_below:
+                counts[str(event["market_id"])] += 1
+
+        self._market_sizes = {}
+        for market_id, count in counts.items():
+            if count >= 10:
+                # Optimal: fill cap in exactly `count` trades
+                optimal = self.position_cap / count
+                # Cap at default_size; don't go below 0.01 to avoid dust orders
+                self._market_sizes[market_id] = max(0.01, min(self.order_size, optimal))
 
     def on_event(self, state: dict[str, Any]) -> Order | None:
         p = float(state["yes_price"])
         if p <= self.buy_yes_below:
-            return Order(market_id=state["market_id"], side="yes", contracts=self.order_size, reason=self.name)
+            market_id = str(state["market_id"])
+            size = self._market_sizes.get(market_id, self.order_size)
+            return Order(
+                market_id=state["market_id"],
+                side="yes",
+                contracts=size,
+                reason=self.name,
+            )
         return None
 
 
