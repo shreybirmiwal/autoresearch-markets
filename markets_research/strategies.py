@@ -106,48 +106,27 @@ class OnlineLogisticLikeStrategy(Strategy):
 
 
 @dataclass
-class ThresholdEdgeWithExitStrategy(Strategy):
-    """Like ThresholdEdgeStrategy but with exit logic to recycle capital."""
-    name: str = "threshold_edge_exit"
+class ScaledThresholdStrategy(Strategy):
+    """Buy YES with larger size at deeper discounts - scale inversely with price."""
+    name: str = "scaled_threshold"
     buy_yes_below: float = 0.42
     buy_no_above: float = 0.58
-    exit_yes_above: float = 0.55  # exit yes positions when price recovers
-    exit_no_below: float = 0.45  # exit no positions when price falls
     order_size: float = 1.0
 
-    def __post_init__(self) -> None:
-        self._yes_pos: dict[str, float] = {}
-        self._no_pos: dict[str, float] = {}
-
     def reset(self) -> None:
-        self._yes_pos.clear()
-        self._no_pos.clear()
+        return None
 
     def on_event(self, state: dict[str, Any]) -> Order | None:
         p = float(state["yes_price"])
-        mid = state["market_id"]
-
-        yes_pos = self._yes_pos.get(mid, 0.0)
-        no_pos = self._no_pos.get(mid, 0.0)
-
-        # Exit YES position when price has recovered
-        if yes_pos > 0 and p >= self.exit_yes_above:
-            self._yes_pos[mid] = 0.0
-            return Order(market_id=mid, side="yes", contracts=-yes_pos, reason=self.name)
-
-        # Exit NO position when price has fallen
-        if no_pos > 0 and p <= self.exit_no_below:
-            self._no_pos[mid] = 0.0
-            return Order(market_id=mid, side="no", contracts=-no_pos, reason=self.name)
-
-        # Entry signals
         if p <= self.buy_yes_below:
-            self._yes_pos[mid] = yes_pos + self.order_size
-            return Order(market_id=mid, side="yes", contracts=self.order_size, reason=self.name)
+            # Scale: more contracts at lower prices (deeper value)
+            scale = 1.0 + max(0.0, (self.buy_yes_below - p) / self.buy_yes_below)
+            size = self.order_size * round(scale)
+            return Order(market_id=state["market_id"], side="yes", contracts=size, reason=self.name)
         if p >= self.buy_no_above:
-            self._no_pos[mid] = no_pos + self.order_size
-            return Order(market_id=mid, side="no", contracts=self.order_size, reason=self.name)
-
+            scale = 1.0 + max(0.0, (p - self.buy_no_above) / (1.0 - self.buy_no_above))
+            size = self.order_size * round(scale)
+            return Order(market_id=state["market_id"], side="no", contracts=size, reason=self.name)
         return None
 
 
@@ -156,5 +135,5 @@ def default_strategy_registry() -> list[Strategy]:
         ThresholdEdgeStrategy(),
         MeanReversionStrategy(),
         OnlineLogisticLikeStrategy(),
-        ThresholdEdgeWithExitStrategy(),
+        ScaledThresholdStrategy(),
     ]
