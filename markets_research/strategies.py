@@ -130,11 +130,48 @@ class BandedThresholdStrategy(Strategy):
         return None
 
 
+@dataclass
+class ExitAwareBandedStrategy(Strategy):
+    """Buy YES in 0.20-0.42, exit YES when price rises above 0.55; buy NO above 0.65.
+    Mechanism: capture the mispricing edge in the 0.20-0.42 band, then exit
+    when price converges toward fair value (0.55+), recycling capital for new
+    opportunities. Avoids position cap and reduces reversal risk.
+    """
+    name: str = "exit_aware_banded"
+    yes_floor: float = 0.20
+    yes_ceil: float = 0.42
+    no_floor: float = 0.65
+    exit_yes_above: float = 0.55
+    order_size: float = 1.0
+
+    def reset(self) -> None:
+        return None
+
+    def on_event(self, state: dict[str, Any]) -> Order | None:
+        p = float(state["yes_price"])
+        pos_yes = float(state.get("position_yes_contracts", 0))
+
+        # Exit YES position when price has risen to profitable territory
+        if pos_yes > 0 and p >= self.exit_yes_above:
+            return Order(market_id=state["market_id"], side="yes", contracts=-pos_yes, reason=self.name)
+
+        # Buy YES in the profitable mid-range
+        if self.yes_floor <= p <= self.yes_ceil:
+            return Order(market_id=state["market_id"], side="yes", contracts=self.order_size, reason=self.name)
+
+        # Buy NO only in high-confidence range (avoid 0.60-0.65 gray zone)
+        if p >= self.no_floor:
+            return Order(market_id=state["market_id"], side="no", contracts=self.order_size, reason=self.name)
+
+        return None
+
+
 def default_strategy_registry() -> list[Strategy]:
     return [
         ThresholdEdgeStrategy(),
         MeanReversionStrategy(),
         OnlineLogisticLikeStrategy(),
         BandedThresholdStrategy(),
+        ExitAwareBandedStrategy(),
     ]
 
