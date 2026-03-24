@@ -166,106 +166,36 @@ class Yes36NO80Strategy(Strategy):
 
 
 @dataclass
-class ThresholdMeanReversionComboStrategy(Strategy):
-    """Combined: threshold + mean-reversion confirmation.
-    Buy YES only when BOTH price < threshold AND z-score indicates oversold."""
-    name: str = "threshold_mr_combo"
+class LowVolatilityThresholdStrategy(Strategy):
+    """YES<0.36, NO>0.80 but skip trading when price is highly volatile (3-event range > 5pp).
+    This avoids bad execution from rapid price movements."""
+    name: str = "low_vol_threshold"
     buy_yes_below: float = 0.36
     buy_no_above: float = 0.80
-    window: int = 30
-    z_confirm: float = 0.5  # softer z-score requirement for confirmation
+    vol_window: int = 3
+    max_range: float = 0.05  # skip if 3-event price range > 5pp
     order_size: float = 1.0
 
     def __post_init__(self) -> None:
-        self._history: deque[float] = deque(maxlen=self.window)
+        self._recent: deque[float] = deque(maxlen=self.vol_window)
 
     def reset(self) -> None:
-        self._history.clear()
+        self._recent.clear()
 
     def on_event(self, state: dict[str, Any]) -> Order | None:
         p = float(state["yes_price"])
-        self._history.append(p)
+        self._recent.append(p)
 
-        if len(self._history) < self.window:
-            # Not enough history, use plain threshold
-            if p <= self.buy_yes_below:
-                return Order(market_id=state["market_id"], side="yes", contracts=self.order_size, reason=self.name)
-            if p >= self.buy_no_above:
-                return Order(market_id=state["market_id"], side="no", contracts=self.order_size, reason=self.name)
-            return None
+        # Check recent volatility
+        if len(self._recent) >= self.vol_window:
+            arr = np.array(self._recent)
+            recent_range = arr.max() - arr.min()
+            if recent_range > self.max_range:
+                return None  # Skip - too volatile, execution risk is high
 
-        arr = np.array(self._history, dtype=np.float64)
-        std = arr.std()
-        if std <= 1e-9:
-            # No variance - use plain threshold
-            if p <= self.buy_yes_below:
-                return Order(market_id=state["market_id"], side="yes", contracts=self.order_size, reason=self.name)
-            if p >= self.buy_no_above:
-                return Order(market_id=state["market_id"], side="no", contracts=self.order_size, reason=self.name)
-            return None
-
-        z = (p - arr.mean()) / std
-
-        # YES: both threshold and z-score confirm oversold
-        if p <= self.buy_yes_below and z <= -self.z_confirm:
-            return Order(market_id=state["market_id"], side="yes", contracts=self.order_size, reason=self.name)
-        # NO: both threshold and z-score confirm overbought
-        if p >= self.buy_no_above and z >= self.z_confirm:
-            return Order(market_id=state["market_id"], side="no", contracts=self.order_size, reason=self.name)
-        return None
-
-
-@dataclass
-class Yes36NO90Strategy(Strategy):
-    """YES below 0.36, NO above 0.90 - very selective NO trades."""
-    name: str = "yes36_no90"
-    buy_yes_below: float = 0.36
-    buy_no_above: float = 0.90
-    order_size: float = 1.0
-
-    def reset(self) -> None:
-        return None
-
-    def on_event(self, state: dict[str, Any]) -> Order | None:
-        p = float(state["yes_price"])
         if p <= self.buy_yes_below:
             return Order(market_id=state["market_id"], side="yes", contracts=self.order_size, reason=self.name)
         if p >= self.buy_no_above:
-            return Order(market_id=state["market_id"], side="no", contracts=self.order_size, reason=self.name)
-        return None
-
-
-@dataclass
-class ConstrainedLogisticStrategy(Strategy):
-    """OnlineLogistic with hard constraint: only YES when price<0.5, only NO when price>0.5."""
-    name: str = "constrained_logistic"
-    lr: float = 0.05
-    order_size: float = 1.0
-
-    def __post_init__(self) -> None:
-        self._w = np.zeros(3, dtype=np.float64)
-
-    def reset(self) -> None:
-        self._w[:] = 0.0
-
-    def fit(self, train_events: list[dict[str, Any]]) -> None:
-        for event in train_events:
-            px = float(event.get("yes_price", event.get("price_yes", 0.5)))
-            x = np.array([1.0, px, np.log1p(float(event["size"]))], dtype=np.float64)
-            y = float(event.get("label", 0.5))
-            pred = 1.0 / (1.0 + np.exp(-float(np.dot(self._w, x))))
-            grad = (pred - y) * x
-            self._w -= self.lr * grad
-
-    def on_event(self, state: dict[str, Any]) -> Order | None:
-        p = float(state["yes_price"])
-        x = np.array([1.0, p, np.log1p(float(state["size"]))], dtype=np.float64)
-        pred_yes = 1.0 / (1.0 + np.exp(-float(np.dot(self._w, x))))
-        # Only allow YES signal when price is below 0.50 (prevent buying into high-priced markets)
-        if p < 0.50 and pred_yes - p > 0.05:
-            return Order(market_id=state["market_id"], side="yes", contracts=self.order_size, reason=self.name)
-        # Only allow NO signal when price is above 0.50
-        if p > 0.50 and p - pred_yes > 0.05:
             return Order(market_id=state["market_id"], side="no", contracts=self.order_size, reason=self.name)
         return None
 
@@ -278,5 +208,5 @@ def default_strategy_registry() -> list[Strategy]:
         MidThresholdStrategy(),
         AsymmetricThreshold80Strategy(),
         Yes36NO80Strategy(),
-        ConstrainedLogisticStrategy(),
+        LowVolatilityThresholdStrategy(),
     ]
