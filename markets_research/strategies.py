@@ -27,19 +27,16 @@ class Strategy(ABC):
 
 @dataclass
 class HybridEdgeStrategy(Strategy):
-    """Buy YES extended range when EITHER in good UTC hours OR in a cheap cluster
-    OR in a diverse-market sequence (≥3 distinct markets in last 5 events),
-    with a market-switch gate for extended range buys.
+    """Buy YES extended range with market-switch gate and sequence quality filters.
     Mechanism:
       1. Base: always buy YES ≤ 0.45.
       2. Extended (0.45-0.60): buy when continuation (not market switch) AND
-         (good hours UTC 3-11 OR ≥40% of last 5 events were cheap
-          OR ≥3 distinct markets appeared in last 5 events).
+         sequence is NOT a single-market long run (n_distinct ≥ 2 in last 5 events) AND
+         (good hours UTC 3-11 OR ≥40% of last 5 events were cheap).
       3. Market-switch gate: skip extended at first event from any market (run_pos=1).
-      4. Diverse-market signal: when ≥3 distinct markets appear in last 5 events,
-         cheap markets are actively interleaving. Extended range buy executes at one of
-         those cheap markets → excellent execution quality (avg PnL 0.107 vs 0.006 for
-         single-market runs).
+      4. Single-market-run filter: when last 5 events all from same market (n_distinct=1),
+         extended range has poor execution quality (avg exec PnL = 0.006 vs 0.09+ for
+         diverse sequences). Block even during good hours.
     fit() uses n*2//3 window to estimate adaptive order sizes per market.
     """
     name: str = "hybrid_edge"
@@ -49,7 +46,6 @@ class HybridEdgeStrategy(Strategy):
     good_hour_end: int = 11
     rolling_window: int = 5
     cheap_fraction_min: float = 0.40
-    diverse_market_min: int = 3
     order_size: float = 0.65
     position_cap: float = 500.0
 
@@ -74,10 +70,6 @@ class HybridEdgeStrategy(Strategy):
             cheap_frac = sum(1 for p in self._recent_prices if p <= self.base_threshold) / self.rolling_window
             if cheap_frac >= self.cheap_fraction_min:
                 return True
-        # Diverse-market signal: many active markets = cheap interleaving = good execution
-        if len(self._recent_market_ids) >= self.rolling_window:
-            if len(set(self._recent_market_ids)) >= self.diverse_market_min:
-                return True
         return False
 
     def _qualifies(self, price: float, ts: Any, market_id: Any) -> bool:
@@ -86,6 +78,10 @@ class HybridEdgeStrategy(Strategy):
         if price <= self.extended_threshold:
             if market_id != self._prev_market_id:
                 return False  # market-switch gate
+            # Single-market-run filter: all recent events from same market → poor execution
+            if (len(self._recent_market_ids) >= self.rolling_window
+                    and len(set(self._recent_market_ids)) < 2):
+                return False
             return self._cheap_conditions(ts)
         return False
 
@@ -104,15 +100,17 @@ class HybridEdgeStrategy(Strategy):
             if p <= self.base_threshold:
                 qualifies = True
             elif p <= self.extended_threshold and mid == prev_mid:
-                h = self._hour_of(ts)
-                if h is not None and self.good_hour_start <= h <= self.good_hour_end:
-                    qualifies = True
-                elif len(recent) >= self.rolling_window:
-                    cheap_frac = sum(1 for rp in recent if rp <= self.base_threshold) / self.rolling_window
-                    if cheap_frac >= self.cheap_fraction_min:
+                # Single-market-run filter
+                if len(recent_mids) >= self.rolling_window and len(set(recent_mids)) < 2:
+                    pass  # skip single-market runs
+                else:
+                    h = self._hour_of(ts)
+                    if h is not None and self.good_hour_start <= h <= self.good_hour_end:
                         qualifies = True
-                elif len(recent_mids) >= self.rolling_window and len(set(recent_mids)) >= self.diverse_market_min:
-                    qualifies = True
+                    elif len(recent) >= self.rolling_window:
+                        cheap_frac = sum(1 for rp in recent if rp <= self.base_threshold) / self.rolling_window
+                        if cheap_frac >= self.cheap_fraction_min:
+                            qualifies = True
             if qualifies:
                 counts[mid] += 1
             recent.append(p)
