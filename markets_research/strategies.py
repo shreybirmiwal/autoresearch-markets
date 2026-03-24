@@ -126,11 +126,56 @@ class ContraryExtremesStrategy(Strategy):
         return None
 
 
+@dataclass
+class EMACrossoverStrategy(Strategy):
+    """EMA crossover: when short EMA crosses above long EMA, buy YES (upward momentum).
+    When short EMA crosses below long EMA, buy NO (downward momentum)."""
+    name: str = "ema_crossover"
+    short_window: int = 5
+    long_window: int = 20
+    order_size: float = 1.0
+
+    def __post_init__(self) -> None:
+        self._prices: deque[float] = deque(maxlen=self.long_window)
+        self._prev_signal: int = 0  # 0=none, 1=short>long, -1=short<long
+
+    def reset(self) -> None:
+        self._prices.clear()
+        self._prev_signal = 0
+
+    def _ema(self, prices: list[float], window: int) -> float:
+        alpha = 2.0 / (window + 1)
+        ema = prices[0]
+        for p in prices[1:]:
+            ema = alpha * p + (1 - alpha) * ema
+        return ema
+
+    def on_event(self, state: dict[str, Any]) -> Order | None:
+        p = float(state["yes_price"])
+        self._prices.append(p)
+        if len(self._prices) < self.long_window:
+            return None
+        prices_list = list(self._prices)
+        short_ema = self._ema(prices_list[-self.short_window:], self.short_window)
+        long_ema = self._ema(prices_list, self.long_window)
+        current_signal = 1 if short_ema > long_ema else -1
+        # Only trade on crossover
+        if current_signal != self._prev_signal and self._prev_signal != 0:
+            self._prev_signal = current_signal
+            if current_signal == 1:
+                return Order(market_id=state["market_id"], side="yes", contracts=self.order_size, reason=self.name)
+            else:
+                return Order(market_id=state["market_id"], side="no", contracts=self.order_size, reason=self.name)
+        self._prev_signal = current_signal
+        return None
+
+
 def default_strategy_registry() -> list[Strategy]:
     return [
         ThresholdEdgeStrategy(),
         MeanReversionStrategy(),
         OnlineLogisticLikeStrategy(),
         ContraryExtremesStrategy(),
+        EMACrossoverStrategy(),
     ]
 
