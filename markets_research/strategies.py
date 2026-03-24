@@ -258,6 +258,45 @@ class MomentumReverseStrategy(Strategy):
         return None
 
 
+@dataclass
+class MultiTimeframeMeanReversionStrategy(Strategy):
+    """Multi-timeframe mean reversion: buy YES when price is below BOTH short and long MA.
+    Buy NO when above both. Requires double confirmation for trade signal."""
+    name: str = "multi_tf_mean_rev"
+    short_window: int = 10
+    long_window: int = 50
+    z_threshold: float = 0.8
+    order_size: float = 1.0
+
+    def __post_init__(self) -> None:
+        self._prices: deque[float] = deque(maxlen=self.long_window)
+
+    def reset(self) -> None:
+        self._prices.clear()
+
+    def on_event(self, state: dict[str, Any]) -> Order | None:
+        p = float(state["yes_price"])
+        self._prices.append(p)
+        if len(self._prices) < self.long_window:
+            return None
+        prices = np.array(self._prices, dtype=np.float64)
+        short_prices = prices[-self.short_window:]
+        long_mean = prices.mean()
+        short_mean = short_prices.mean()
+        long_std = prices.std()
+        if long_std < 1e-9:
+            return None
+        z_long = (p - long_mean) / long_std
+        # Only buy YES if price is below BOTH means (double confirmation)
+        # Only trade YES when price is reasonably low (avoid high-price mismatches)
+        if z_long < -self.z_threshold and p < short_mean and p <= 0.45:
+            return Order(market_id=state["market_id"], side="yes", contracts=self.order_size, reason=self.name)
+        # Only buy NO if price is above BOTH means (double confirmation)
+        if z_long > self.z_threshold and p > short_mean and p >= 0.55:
+            return Order(market_id=state["market_id"], side="no", contracts=self.order_size, reason=self.name)
+        return None
+
+
 def default_strategy_registry() -> list[Strategy]:
     return [
         ThresholdEdgeStrategy(),
@@ -267,5 +306,6 @@ def default_strategy_registry() -> list[Strategy]:
         EMACrossoverStrategy(),
         RSIStrategy(),
         MomentumReverseStrategy(),
+        MultiTimeframeMeanReversionStrategy(),
     ]
 
