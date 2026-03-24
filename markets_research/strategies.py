@@ -154,41 +154,37 @@ class TrendFilteredThresholdStrategy(Strategy):
 
 
 @dataclass
-class FitMarketSelectStrategy(Strategy):
-    """Use fit() to identify sweet-zone markets; reduce size on pure-cheap markets.
+class OnlineSweetDetectStrategy(Strategy):
+    """Real-time sweet-zone crossing detection for market quality.
 
-    Mechanism: Data shows only ~2/20 markets have trades in the sweet spot
-    (0.20-0.42) and these generate ALL the profit. The other 18 markets are
-    'pure cheap' (price always < 0.20) and resolve NO, generating small losses.
-    In fit(), learn which markets ever crossed 0.20. In on_event(), give those
-    markets full 1x size. Markets that never crossed 0.20 in train are likely
-    NO-resolving markets — use 0.1x to minimize losses.
+    Mechanism: Once a market's price crosses 0.20 (enters sweet zone),
+    it has demonstrated YES momentum — likely heading toward 1.0 resolution.
+    Full-size YES buys. Markets that have NEVER crossed 0.20 are probably
+    correctly-priced NO markets — tiny size to minimize losses.
+    No fit() dependency: works online from first event.
     """
-    name: str = "fit_market_select"
+    name: str = "online_sweet_detect"
     buy_yes_below: float = 0.42
     buy_no_above: float = 0.58
-    sweet_threshold: float = 0.20
+    sweet_entry: float = 0.20
     full_size: float = 1.0
-    cheap_only_size: float = 0.1
+    pre_sweet_size: float = 0.05
 
     def __post_init__(self) -> None:
-        self._sweet_markets: set = set()
+        self._ever_sweet: set = set()
 
     def reset(self) -> None:
-        self._sweet_markets.clear()
-
-    def fit(self, train_events: list[dict[str, Any]]) -> None:
-        for event in train_events:
-            p = float(event.get("yes_price", event.get("price_yes", 0.5)))
-            if p >= self.sweet_threshold:
-                self._sweet_markets.add(event["market_id"])
+        self._ever_sweet.clear()
 
     def on_event(self, state: dict[str, Any]) -> Order | None:
-        p = float(state["yes_price"])
         mid = state["market_id"]
+        p = float(state["yes_price"])
+
+        if p >= self.sweet_entry:
+            self._ever_sweet.add(mid)
 
         if p <= self.buy_yes_below:
-            size = self.full_size if mid in self._sweet_markets else self.cheap_only_size
+            size = self.full_size if mid in self._ever_sweet else self.pre_sweet_size
             return Order(market_id=mid, side="yes", contracts=size, reason=self.name)
 
         if p >= self.buy_no_above:
@@ -203,6 +199,6 @@ def default_strategy_registry() -> list[Strategy]:
         MeanReversionStrategy(),
         OnlineLogisticLikeStrategy(),
         TrendFilteredThresholdStrategy(),
-        FitMarketSelectStrategy(),
+        OnlineSweetDetectStrategy(),
     ]
 
