@@ -241,6 +241,46 @@ class LocalMinBoostYesStrategy(Strategy):
         return None
 
 
+@dataclass
+class ExitAwareBandedStrategy(Strategy):
+    """Two-sided strategy: buy cheap YES and short expensive YES via NO.
+    YES side: buy YES in (0.20, 0.42], exit when price rises above 0.55 (capital recycling).
+    NO side: buy NO when YES > 0.65 (short expensive YES).
+    Prior session: score 0.1859, sharpe 1.98, pnl $471.
+    Mechanism: cheap YES has high expected value; expensive YES (>0.65) tends to revert
+    because markets near resolution often see final prices settle at true probability.
+    Exit at 0.55 recycles YES capital faster, generating more entry opportunities.
+    """
+    name: str = "exit_aware_banded"
+    buy_yes_low: float = 0.20
+    buy_yes_high: float = 0.42
+    exit_yes_above: float = 0.55
+    buy_no_above: float = 0.65
+    order_size: float = 1.0
+
+    def reset(self) -> None:
+        return None
+
+    def on_event(self, state: dict[str, Any]) -> Order | None:
+        p = float(state["yes_price"])
+        pos_yes = float(state.get("position_yes_contracts", 0.0))
+        pos_no = float(state.get("position_no_contracts", 0.0))
+
+        # Exit YES position at take-profit (capital recycling)
+        if pos_yes > 0 and p >= self.exit_yes_above:
+            return Order(market_id=state["market_id"], side="yes", contracts=-pos_yes, reason=self.name + "_exit_yes")
+
+        # Enter YES in cheap band
+        if self.buy_yes_low < p <= self.buy_yes_high:
+            return Order(market_id=state["market_id"], side="yes", contracts=self.order_size, reason=self.name)
+
+        # Enter NO when YES is expensive (short expensive YES)
+        if p > self.buy_no_above:
+            return Order(market_id=state["market_id"], side="no", contracts=self.order_size, reason=self.name)
+
+        return None
+
+
 def default_strategy_registry() -> list[Strategy]:
     return [
         ThresholdEdgeStrategy(),
@@ -248,5 +288,6 @@ def default_strategy_registry() -> list[Strategy]:
         PriceBandBuyYesStrategy(),
         MeanReversionBandYesStrategy(),
         LocalMinBoostYesStrategy(),
+        ExitAwareBandedStrategy(),
     ]
 
