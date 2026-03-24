@@ -226,35 +226,19 @@ class YesWiderNO80Strategy(Strategy):
 
 
 @dataclass
-class VolumeFilteredThresholdStrategy(Strategy):
-    """Like YesWiderNO80 but only trades when volume is below median (avoid informed trades)."""
-    name: str = "volume_filtered_threshold"
+class YesOnlyStrategy(Strategy):
+    """Pure YES-only strategy: only buy YES at low prices, never trade NO side."""
+    name: str = "yes_only"
     buy_yes_below: float = 0.38
-    buy_no_above: float = 0.80
     order_size: float = 1.0
-    vol_window: int = 50
-
-    def __post_init__(self) -> None:
-        self._vol_hist: deque[float] = deque(maxlen=self.vol_window)
 
     def reset(self) -> None:
-        self._vol_hist.clear()
+        return None
 
     def on_event(self, state: dict[str, Any]) -> Order | None:
-        size = float(state["size"])
-        self._vol_hist.append(size)
         p = float(state["yes_price"])
-
-        # Only need thresholds to signal - volume filter: trade only on smaller-than-median trades
-        if len(self._vol_hist) >= self.vol_window:
-            median_vol = float(np.median(np.array(self._vol_hist)))
-            if size > median_vol:
-                return None  # Skip large trades (may be informed)
-
         if p <= self.buy_yes_below:
             return Order(market_id=state["market_id"], side="yes", contracts=self.order_size, reason=self.name)
-        if p >= self.buy_no_above:
-            return Order(market_id=state["market_id"], side="no", contracts=self.order_size, reason=self.name)
         return None
 
 
@@ -269,5 +253,5 @@ def default_strategy_registry() -> list[Strategy]:
         AsymmetricThreshold80Strategy(),
         AsymmetricThreshold85Strategy(),
         YesWiderNO80Strategy(),
-        VolumeFilteredThresholdStrategy(),
+        YesOnlyStrategy(),
     ]
