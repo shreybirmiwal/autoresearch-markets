@@ -165,6 +165,26 @@ class AsymmetricThreshold75Strategy(Strategy):
         return None
 
 
+@dataclass
+class AsymmetricThreshold80Strategy(Strategy):
+    """Asymmetric: YES below 0.35, NO above 0.80 for even higher quality NO trades."""
+    name: str = "asym_threshold_80"
+    buy_yes_below: float = 0.35
+    buy_no_above: float = 0.80
+    order_size: float = 1.0
+
+    def reset(self) -> None:
+        return None
+
+    def on_event(self, state: dict[str, Any]) -> Order | None:
+        p = float(state["yes_price"])
+        if p <= self.buy_yes_below:
+            return Order(market_id=state["market_id"], side="yes", contracts=self.order_size, reason=self.name)
+        if p >= self.buy_no_above:
+            return Order(market_id=state["market_id"], side="no", contracts=self.order_size, reason=self.name)
+        return None
+
+
 def default_strategy_registry() -> list[Strategy]:
     return [
         ThresholdEdgeStrategy(),
@@ -173,4 +193,5 @@ def default_strategy_registry() -> list[Strategy]:
         MidThresholdStrategy(),
         AsymmetricThresholdStrategy(),
         AsymmetricThreshold75Strategy(),
+        AsymmetricThreshold80Strategy(),
     ]
