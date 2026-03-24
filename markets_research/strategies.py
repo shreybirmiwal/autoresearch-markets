@@ -105,10 +105,68 @@ class OnlineLogisticLikeStrategy(Strategy):
         return None
 
 
+@dataclass
+class LargeTradeFollowerStrategy(Strategy):
+    """Follow large trades as informed-trader signal with exit logic.
+
+    Mechanism: Large trades (>3x rolling median size for this market) are more likely
+    from informed participants with private information. When a large YES buy occurs
+    at a low price (0.10-0.40), we follow. Exit on take-profit (>0.70) or stop-loss (<0.05).
+    """
+
+    name: str = "large_trade_follower"
+    size_window: int = 20
+    size_multiplier: float = 3.0
+    entry_min: float = 0.10
+    entry_max: float = 0.40
+    exit_take_profit: float = 0.70
+    exit_stop_loss: float = 0.05
+    order_size: float = 1.0
+
+    def __post_init__(self) -> None:
+        # per-market rolling size history
+        self._market_sizes: dict[str, deque] = {}
+
+    def reset(self) -> None:
+        self._market_sizes.clear()
+
+    def on_event(self, state: dict[str, Any]) -> Order | None:
+        mid = str(state["market_id"])
+        p = float(state["yes_price"])
+        sz = float(state["size"])
+        pos_yes = float(state["position_yes_contracts"])
+
+        if mid not in self._market_sizes:
+            self._market_sizes[mid] = deque(maxlen=self.size_window)
+        hist = self._market_sizes[mid]
+
+        # Exit logic: if holding YES and price has moved enough
+        if pos_yes > 0:
+            hist.append(sz)
+            if p >= self.exit_take_profit or p <= self.exit_stop_loss:
+                return Order(market_id=state["market_id"], side="yes", contracts=-pos_yes, reason=self.name)
+            return None
+
+        hist.append(sz)
+        if len(hist) < 5:
+            return None
+
+        median_sz = float(np.median(np.array(hist, dtype=np.float64)))
+        if median_sz <= 0:
+            return None
+
+        # Large YES buy signal at low price
+        if sz >= self.size_multiplier * median_sz and self.entry_min <= p <= self.entry_max:
+            return Order(market_id=state["market_id"], side="yes", contracts=self.order_size, reason=self.name)
+
+        return None
+
+
 def default_strategy_registry() -> list[Strategy]:
     return [
         ThresholdEdgeStrategy(),
         MeanReversionStrategy(),
         OnlineLogisticLikeStrategy(),
+        LargeTradeFollowerStrategy(),
     ]
 
