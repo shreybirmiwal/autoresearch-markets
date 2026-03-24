@@ -27,14 +27,17 @@ class Strategy(ABC):
 
 @dataclass
 class HybridEdgeStrategy(Strategy):
-    """Buy YES extended range when EITHER in good UTC hours OR in a cheap price cluster.
-    Mechanism: combines two independent signals that both identify when the global sequence
-    is in a cheap execution state:
-      1. Time-of-day: UTC 3-11 (US nighttime) has fewer expensive political market events
-         contaminating the sequence → better execution for 0.45-0.58 range buys.
-      2. Cheap cluster: when ≥40% of last 20 global events had price ≤ 0.45, the sequence
-         is currently in a cheap cluster → next execution likely cheap → extend to 0.58.
-    Both signals find when extended buying (up to 0.58) has positive expected value.
+    """Buy YES extended range when EITHER in good UTC hours OR in a cheap price cluster,
+    AND skip extended buying when the market just switched in (first event from this market).
+    Mechanism:
+      1. Base: always buy YES ≤ 0.45 (cheap market = good execution).
+      2. Extended (0.45-0.58): buy when good hours (UTC 3-11) OR cheap cluster (≥40% of
+         last 20 events cheap). These conditions identify when extended buying has +EV.
+      3. Market-switch gate: when a new market appears (prev_market ≠ current), the
+         NEXT event is likely from this same market (55% empirical continuation rate).
+         For expensive markets (0.45-0.58), same-market continuation = bad execution
+         (avg_exec=0.52, pct_cheap=0.11). Skip extended buys on market-switch events.
+         Continuation events (run_pos≥2) have avg_exec=0.33, pct_cheap=0.48 — good.
     fit() uses n*2//3 window to estimate adaptive order sizes per market.
     """
     name: str = "hybrid_edge"
@@ -50,6 +53,7 @@ class HybridEdgeStrategy(Strategy):
     def reset(self) -> None:
         self._market_sizes: dict[str, float] = {}
         self._recent_prices: deque = deque(maxlen=self.rolling_window)
+        self._prev_market_id: Any = None
         return None
 
     def _hour_of(self, ts: Any) -> int | None:
@@ -58,10 +62,14 @@ class HybridEdgeStrategy(Strategy):
         except Exception:
             return None
 
-    def _qualifies(self, price: float, ts: Any) -> bool:
+    def _qualifies(self, price: float, ts: Any, market_id: Any) -> bool:
         if price <= self.base_threshold:
             return True
         if price <= self.extended_threshold:
+            # Market-switch gate: skip extended buying on first event from this market
+            # (next event likely same expensive market → bad execution)
+            if market_id != self._prev_market_id:
+                return False
             h = self._hour_of(ts)
             if h is not None and self.good_hour_start <= h <= self.good_hour_end:
                 return True
@@ -75,14 +83,17 @@ class HybridEdgeStrategy(Strategy):
         n = len(train_events)
         window = train_events[n * 2 // 3:]
         recent: deque = deque(maxlen=self.rolling_window)
+        prev_mid: Any = None
         counts: dict[str, int] = defaultdict(int)
         for event in window:
             p = float(event["price_yes"])
             ts = event.get("event_ts")
+            mid = str(event["market_id"])
             qualifies = False
             if p <= self.base_threshold:
                 qualifies = True
-            elif p <= self.extended_threshold:
+            elif p <= self.extended_threshold and mid == prev_mid:
+                # Only extend when market is continuing (same as _qualifies gate)
                 h = self._hour_of(ts)
                 if h is not None and self.good_hour_start <= h <= self.good_hour_end:
                     qualifies = True
@@ -91,8 +102,9 @@ class HybridEdgeStrategy(Strategy):
                     if cheap_frac >= self.cheap_fraction_min:
                         qualifies = True
             if qualifies:
-                counts[str(event["market_id"])] += 1
+                counts[mid] += 1
             recent.append(p)
+            prev_mid = mid
 
         self._market_sizes = {}
         for market_id, count in counts.items():
@@ -102,13 +114,15 @@ class HybridEdgeStrategy(Strategy):
 
     def on_event(self, state: dict[str, Any]) -> Order | None:
         p = float(state["yes_price"])
-        qualifies = self._qualifies(p, state.get("event_ts"))
+        market_id = state["market_id"]
+        qualifies = self._qualifies(p, state.get("event_ts"), market_id)
         self._recent_prices.append(p)
+        self._prev_market_id = market_id
         if qualifies:
-            market_id = str(state["market_id"])
-            size = self._market_sizes.get(market_id, self.order_size)
+            mid = str(market_id)
+            size = self._market_sizes.get(mid, self.order_size)
             return Order(
-                market_id=state["market_id"],
+                market_id=market_id,
                 side="yes",
                 contracts=size,
                 reason=self.name,
