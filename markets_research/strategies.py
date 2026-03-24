@@ -126,26 +126,6 @@ class MidThresholdStrategy(Strategy):
 
 
 @dataclass
-class AsymmetricThreshold75Strategy(Strategy):
-    """Asymmetric: YES below 0.35, NO above 0.75 for higher quality NO trades."""
-    name: str = "asym_threshold_75"
-    buy_yes_below: float = 0.35
-    buy_no_above: float = 0.75
-    order_size: float = 1.0
-
-    def reset(self) -> None:
-        return None
-
-    def on_event(self, state: dict[str, Any]) -> Order | None:
-        p = float(state["yes_price"])
-        if p <= self.buy_yes_below:
-            return Order(market_id=state["market_id"], side="yes", contracts=self.order_size, reason=self.name)
-        if p >= self.buy_no_above:
-            return Order(market_id=state["market_id"], side="no", contracts=self.order_size, reason=self.name)
-        return None
-
-
-@dataclass
 class AsymmetricThreshold80Strategy(Strategy):
     """Asymmetric: YES below 0.35, NO above 0.80 for even higher quality NO trades."""
     name: str = "asym_threshold_80"
@@ -166,48 +146,8 @@ class AsymmetricThreshold80Strategy(Strategy):
 
 
 @dataclass
-class YesWiderNO80Strategy(Strategy):
-    """YES below 0.38 (slightly wider), NO above 0.80."""
-    name: str = "yes_wider_no80"
-    buy_yes_below: float = 0.38
-    buy_no_above: float = 0.80
-    order_size: float = 1.0
-
-    def reset(self) -> None:
-        return None
-
-    def on_event(self, state: dict[str, Any]) -> Order | None:
-        p = float(state["yes_price"])
-        if p <= self.buy_yes_below:
-            return Order(market_id=state["market_id"], side="yes", contracts=self.order_size, reason=self.name)
-        if p >= self.buy_no_above:
-            return Order(market_id=state["market_id"], side="no", contracts=self.order_size, reason=self.name)
-        return None
-
-
-@dataclass
-class Yes37NO80Strategy(Strategy):
-    """Fine-tuned: YES below 0.37, NO above 0.80."""
-    name: str = "yes37_no80"
-    buy_yes_below: float = 0.37
-    buy_no_above: float = 0.80
-    order_size: float = 1.0
-
-    def reset(self) -> None:
-        return None
-
-    def on_event(self, state: dict[str, Any]) -> Order | None:
-        p = float(state["yes_price"])
-        if p <= self.buy_yes_below:
-            return Order(market_id=state["market_id"], side="yes", contracts=self.order_size, reason=self.name)
-        if p >= self.buy_no_above:
-            return Order(market_id=state["market_id"], side="no", contracts=self.order_size, reason=self.name)
-        return None
-
-
-@dataclass
 class Yes36NO80Strategy(Strategy):
-    """Fine-tuned: YES below 0.36, NO above 0.80."""
+    """Current best: YES below 0.36, NO above 0.80."""
     name: str = "yes36_no80"
     buy_yes_below: float = 0.36
     buy_no_above: float = 0.80
@@ -226,22 +166,66 @@ class Yes36NO80Strategy(Strategy):
 
 
 @dataclass
-class Yes34NO80Strategy(Strategy):
-    """Fine-tuned: YES below 0.34, NO above 0.80."""
-    name: str = "yes34_no80"
-    buy_yes_below: float = 0.34
+class StopLossThresholdStrategy(Strategy):
+    """YES<0.36, NO>0.80 with stop-loss: exit YES position if price drops below stop level."""
+    name: str = "stoploss_threshold"
+    buy_yes_below: float = 0.36
     buy_no_above: float = 0.80
+    stop_loss_drop: float = 0.10  # exit if price drops 10 percentage points below entry
     order_size: float = 1.0
 
+    def __post_init__(self) -> None:
+        self._yes_pos: dict[str, float] = {}
+        self._yes_entry_price: dict[str, float] = {}
+        self._no_pos: dict[str, float] = {}
+        self._no_entry_price: dict[str, float] = {}
+
     def reset(self) -> None:
-        return None
+        self._yes_pos.clear()
+        self._yes_entry_price.clear()
+        self._no_pos.clear()
+        self._no_entry_price.clear()
 
     def on_event(self, state: dict[str, Any]) -> Order | None:
         p = float(state["yes_price"])
+        mid = state["market_id"]
+        yes_pos = self._yes_pos.get(mid, 0.0)
+        no_pos = self._no_pos.get(mid, 0.0)
+
+        # Stop-loss: exit YES if price dropped significantly below average entry
+        if yes_pos > 0:
+            avg_entry = self._yes_entry_price.get(mid, p)
+            if p < avg_entry - self.stop_loss_drop:
+                self._yes_pos[mid] = 0.0
+                self._yes_entry_price.pop(mid, None)
+                return Order(market_id=mid, side="yes", contracts=-yes_pos, reason=self.name)
+
+        # Stop-loss: exit NO if YES price jumped above entry
+        if no_pos > 0:
+            avg_entry = self._no_entry_price.get(mid, p)
+            if p > avg_entry + self.stop_loss_drop:
+                self._no_pos[mid] = 0.0
+                self._no_entry_price.pop(mid, None)
+                return Order(market_id=mid, side="no", contracts=-no_pos, reason=self.name)
+
+        # Entry
         if p <= self.buy_yes_below:
-            return Order(market_id=state["market_id"], side="yes", contracts=self.order_size, reason=self.name)
+            if yes_pos == 0.0:
+                self._yes_entry_price[mid] = p
+            else:
+                # Update average entry price
+                self._yes_entry_price[mid] = (self._yes_entry_price[mid] * yes_pos + p * self.order_size) / (yes_pos + self.order_size)
+            self._yes_pos[mid] = yes_pos + self.order_size
+            return Order(market_id=mid, side="yes", contracts=self.order_size, reason=self.name)
+
         if p >= self.buy_no_above:
-            return Order(market_id=state["market_id"], side="no", contracts=self.order_size, reason=self.name)
+            if no_pos == 0.0:
+                self._no_entry_price[mid] = p
+            else:
+                self._no_entry_price[mid] = (self._no_entry_price[mid] * no_pos + p * self.order_size) / (no_pos + self.order_size)
+            self._no_pos[mid] = no_pos + self.order_size
+            return Order(market_id=mid, side="no", contracts=self.order_size, reason=self.name)
+
         return None
 
 
@@ -251,10 +235,7 @@ def default_strategy_registry() -> list[Strategy]:
         MeanReversionStrategy(),
         OnlineLogisticLikeStrategy(),
         MidThresholdStrategy(),
-        AsymmetricThreshold75Strategy(),
         AsymmetricThreshold80Strategy(),
-        YesWiderNO80Strategy(),
-        Yes37NO80Strategy(),
         Yes36NO80Strategy(),
-        Yes34NO80Strategy(),
+        StopLossThresholdStrategy(),
     ]
