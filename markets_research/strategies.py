@@ -209,6 +209,44 @@ class PositionStateThresholdStrategy(Strategy):
         return None
 
 
+@dataclass
+class PercentileThresholdStrategy(Strategy):
+    """Buy YES when price is at bottom 10th percentile of recent 50 prices.
+    This is a relative threshold - adapts to each market's price range.
+    Also buy NO when price is at top 90th percentile."""
+    name: str = "percentile_threshold"
+    window: int = 50
+    buy_percentile: float = 10.0  # buy YES when at 10th percentile or below
+    sell_percentile: float = 90.0  # buy NO when at 90th percentile or above
+    # Also apply absolute cap to avoid trading in extremely overpriced YES markets
+    abs_yes_cap: float = 0.50  # never buy YES if price is above 0.50
+    abs_no_floor: float = 0.50  # never buy NO if price is below 0.50
+    order_size: float = 1.0
+
+    def __post_init__(self) -> None:
+        self._history: deque[float] = deque(maxlen=self.window)
+
+    def reset(self) -> None:
+        self._history.clear()
+
+    def on_event(self, state: dict[str, Any]) -> Order | None:
+        p = float(state["yes_price"])
+        self._history.append(p)
+
+        if len(self._history) < self.window:
+            return None
+
+        arr = np.array(self._history)
+        low_percentile = float(np.percentile(arr, self.buy_percentile))
+        high_percentile = float(np.percentile(arr, self.sell_percentile))
+
+        if p <= low_percentile and p <= self.abs_yes_cap:
+            return Order(market_id=state["market_id"], side="yes", contracts=self.order_size, reason=self.name)
+        if p >= high_percentile and p >= self.abs_no_floor:
+            return Order(market_id=state["market_id"], side="no", contracts=self.order_size, reason=self.name)
+        return None
+
+
 def default_strategy_registry() -> list[Strategy]:
     return [
         ThresholdEdgeStrategy(),
@@ -217,5 +255,5 @@ def default_strategy_registry() -> list[Strategy]:
         MidThresholdStrategy(),
         AsymmetricThreshold80Strategy(),
         Yes36NO80Strategy(),
-        PositionStateThresholdStrategy(),
+        PercentileThresholdStrategy(),
     ]
