@@ -90,3 +90,30 @@ I think these would be the reasonable hyperparameters to play with. Ask your fav
 ## License
 
 MIT
+
+## Prediction-Market Auto-Research (new)
+
+This repo now also includes a Kalshi-first autonomous strategy research stack under `markets_research/`.
+
+### Components
+
+- `markets_research/schema.py`: unified binary-market schema for Kalshi/Polymarket-compatible data
+- `markets_research/data_ingest_kalshi.py`: Kalshi historical ingestion to partitioned parquet + manifests
+- `markets_research/backtest.py`: event-replay backtester with fees/slippage/latency and bankroll tracking
+- `markets_research/strategies.py`: pluggable strategy interface (rule-based, statistical, online ML-like)
+- `markets_research/scoring.py`: metrics and leaderboard ranking (Sharpe + PnL first-class)
+- `markets_research/attribution.py`: win/loss trade attribution and next-hypothesis suggestions
+- `markets_research/experiment.py`: walk-forward tournament runner with robustness checks
+
+### Quickstart
+
+```bash
+# 1) Optional: generate local synthetic data (fast smoke test)
+uv run python -m markets_research.bootstrap_demo_data --out-dir data_lake
+
+# 2) Run tournament over parquet in data_lake/
+uv run python -m markets_research.experiment --data-root data_lake --output-dir results
+
+# 3) (Alternative) pull Kalshi historical data into parquet
+uv run python -m markets_research.data_ingest_kalshi --out-dir data_lake --limit 1000
+```
