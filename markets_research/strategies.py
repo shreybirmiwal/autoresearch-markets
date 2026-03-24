@@ -155,7 +155,7 @@ class HybridEdgeStrategy(Strategy):
     extended_threshold: float = 0.58
     good_hour_start: int = 3
     good_hour_end: int = 11
-    rolling_window: int = 15
+    rolling_window: int = 20
     cheap_fraction_min: float = 0.40
     order_size: float = 0.65
     position_cap: float = 500.0
@@ -232,7 +232,5 @@ class HybridEdgeStrategy(Strategy):
 
 def default_strategy_registry() -> list[Strategy]:
     return [
-        ThresholdEdgeStrategy(),
-        GoodHoursExtendedStrategy(),
         HybridEdgeStrategy(),
     ]
