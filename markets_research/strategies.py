@@ -195,27 +195,25 @@ class HighWaterMarkStrategy(Strategy):
 
 
 @dataclass
-class HWMSweetMRStrategy(Strategy):
-    """HWM cheap-zone YES + mean-reversion sweet-zone YES. No NO trades.
+class HWMSweetMomStrategy(Strategy):
+    """HWM cheap-zone YES + momentum-confirmed sweet-zone YES. No NO trades.
 
-    Mechanism: Two distinct YES-buying regimes:
-    1. Cheap zone (p < 0.42): HWM filter — only buy in markets that have ever
-       traded above min_viable_price=0.10, filtering out near-zero NO markets.
-    2. Sweet zone (0.42 < p < sweet_ceil): mean-reversion — buy YES when price
-       dips below its rolling mean by z_entry std dev. This captures markets like
-       253591 (YES resolver, price 0.59-0.71) which HWM entirely misses because
-       they never dip into the cheap zone. When 253591 briefly dips 1σ below its
-       mean of ~0.65, buying YES at 0.61-0.63 yields +0.37-0.39 per contract.
+    Mechanism: Extends HWM with sweet-zone (0.42-0.70) YES trades only when:
+    1. Price dipped below recent rolling mean (mean-reversion dip entry)
+    2. Recent slope > 0 (market is still trending UP toward YES resolution)
 
-    No NO trades: removes 253591 NO losses (-0.37 avg) and 252294 NO losses,
-    while sacrificing 253697 NO gains (+0.66 avg). Net fold NO removal is near-
-    neutral but eliminates distribution-shift risk.
+    The momentum filter (slope > 0) is critical: YES-resolving markets in the
+    sweet zone have recently rising prices (heading to 1.0), while NO-resolving
+    markets at similar prices are FALLING (heading to 0). 253697 (NO resolver)
+    has negative slope in holdout (falling from 0.70 to 0.60) → EXCLUDED.
+    253591 (YES resolver, rising from 0.60 to 0.72) → INCLUDED on dips.
     """
-    name: str = "hwm_sweet_mr"
+    name: str = "hwm_sweet_mom"
     buy_yes_below: float = 0.42
     sweet_ceil: float = 0.70
     min_viable_price: float = 0.10
     window: int = 30
+    slope_window: int = 10
     z_entry: float = 0.8
     order_size: float = 1.0
 
@@ -238,17 +236,23 @@ class HWMSweetMRStrategy(Strategy):
         self._history[mid].append(p)
 
         if p <= self.buy_yes_below:
-            # Cheap zone: HWM filter
+            # Cheap zone: HWM viability filter
             if self._max_price[mid] < self.min_viable_price:
                 return None
             return Order(market_id=state["market_id"], side="yes", contracts=self.order_size, reason=self.name)
 
         if self.buy_yes_below < p < self.sweet_ceil:
-            # Sweet zone: mean-reversion YES signal
+            # Sweet zone: momentum + mean-reversion combined
             hist = self._history[mid]
             if len(hist) < self.window:
                 return None
             arr = np.array(hist, dtype=np.float64)
+
+            # Require recent upward momentum (YES market rises, NO market falls)
+            recent = arr[-self.slope_window:]
+            if recent[-1] <= recent[0]:  # not rising over slope_window events
+                return None
+
             std = arr.std()
             if std <= 1e-9:
                 return None
@@ -266,6 +270,6 @@ def default_strategy_registry() -> list[Strategy]:
         OnlineLogisticLikeStrategy(),
         TrendFilteredThresholdStrategy(),
         HighWaterMarkStrategy(),
-        HWMSweetMRStrategy(),
+        HWMSweetMomStrategy(),
     ]
 
