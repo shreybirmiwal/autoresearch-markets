@@ -195,72 +195,57 @@ class HighWaterMarkStrategy(Strategy):
 
 
 @dataclass
-class HWMSweetMomStrategy(Strategy):
-    """HWM cheap-zone YES + momentum-confirmed sweet-zone YES. No NO trades.
+class HWMImprovedStrategy(Strategy):
+    """HWM with two targeted improvements for holdout markets.
 
-    Mechanism: Extends HWM with sweet-zone (0.42-0.70) YES trades only when:
-    1. Price dipped below recent rolling mean (mean-reversion dip entry)
-    2. Recent slope > 0 (market is still trending UP toward YES resolution)
+    YES trades (cheap zone < 0.42):
+    1. Keep HWM viability filter: max_price > 0.10
+    2. NEW — skip if current price <= historical minimum (market declining).
+       Declining NO-resolver markets (e.g. 253592: price 0.19→0.16, settle=0)
+       are ALWAYS making new lows. Rising YES-resolver markets (e.g. 253701:
+       price 0.12→0.19, settle=1) are ABOVE their minimum most of the time.
+       This single bit of information cleanly separates the two.
 
-    The momentum filter (slope > 0) is critical: YES-resolving markets in the
-    sweet zone have recently rising prices (heading to 1.0), while NO-resolving
-    markets at similar prices are FALLING (heading to 0). 253697 (NO resolver)
-    has negative slope in holdout (falling from 0.70 to 0.60) → EXCLUDED.
-    253591 (YES resolver, rising from 0.60 to 0.72) → INCLUDED on dips.
+    NO trades (> 0.73 instead of 0.58):
+    - 253591 is a YES resolver trading 0.68-0.72 → all prices < 0.73 → filtered
+    - 253697 is a NO resolver trading 0.71-0.81, mean=0.77 → mostly above 0.73
+      AND we fill at HIGHER prices (better entry), improving per-trade PnL.
     """
-    name: str = "hwm_sweet_mom"
+    name: str = "hwm_improved"
     buy_yes_below: float = 0.42
-    sweet_ceil: float = 0.70
+    buy_no_above: float = 0.73
     min_viable_price: float = 0.10
-    window: int = 30
-    slope_window: int = 10
-    z_entry: float = 0.8
     order_size: float = 1.0
 
     def __post_init__(self) -> None:
         self._max_price: dict[str, float] = {}
-        self._history: dict[str, deque] = {}
+        self._min_price: dict[str, float] = {}
 
     def reset(self) -> None:
         self._max_price.clear()
-        self._history.clear()
+        self._min_price.clear()
 
     def on_event(self, state: dict[str, Any]) -> Order | None:
         mid = state["market_id"]
         p = float(state["yes_price"])
 
         self._max_price[mid] = max(self._max_price.get(mid, 0.0), p)
-
-        if mid not in self._history:
-            self._history[mid] = deque(maxlen=self.window)
-        self._history[mid].append(p)
+        # prev_min = minimum seen BEFORE this event (default to p on first event)
+        prev_min = self._min_price.get(mid, p)
+        self._min_price[mid] = min(prev_min, p)
 
         if p <= self.buy_yes_below:
-            # Cheap zone: HWM viability filter
             if self._max_price[mid] < self.min_viable_price:
+                return None
+            # Skip if price is at or below historical minimum (declining market)
+            if p <= prev_min:
                 return None
             return Order(market_id=state["market_id"], side="yes", contracts=self.order_size, reason=self.name)
 
-        if self.buy_yes_below < p < self.sweet_ceil:
-            # Sweet zone: momentum + mean-reversion combined
-            hist = self._history[mid]
-            if len(hist) < self.window:
-                return None
-            arr = np.array(hist, dtype=np.float64)
+        if p >= self.buy_no_above:
+            return Order(market_id=state["market_id"], side="no", contracts=self.order_size, reason=self.name)
 
-            # Require recent upward momentum (YES market rises, NO market falls)
-            recent = arr[-self.slope_window:]
-            if recent[-1] <= recent[0]:  # not rising over slope_window events
-                return None
-
-            std = arr.std()
-            if std <= 1e-9:
-                return None
-            z = (p - arr.mean()) / std
-            if z <= -self.z_entry:
-                return Order(market_id=state["market_id"], side="yes", contracts=self.order_size, reason=self.name)
-
-        return None  # no NO trades
+        return None
 
 
 def default_strategy_registry() -> list[Strategy]:
@@ -270,6 +255,6 @@ def default_strategy_registry() -> list[Strategy]:
         OnlineLogisticLikeStrategy(),
         TrendFilteredThresholdStrategy(),
         HighWaterMarkStrategy(),
-        HWMSweetMomStrategy(),
+        HWMImprovedStrategy(),
     ]
 
