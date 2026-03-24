@@ -39,13 +39,15 @@ class ThresholdEdgeStrategy(Strategy):
         return None
 
     def fit(self, train_events: list[dict[str, Any]]) -> None:
-        # Use a window matching ~one test fold's worth of events (~25k at 100k rows).
-        # This gives count ≈ qualifying_events_per_test_fold, so setting
-        # size = position_cap / count fills the cap using ALL qualifying events,
-        # maximising trade density AND total contracts simultaneously.
-        FOLD_WINDOW = 25000
+        # Count qualifying events per market in the LAST quarter of training data
+        # (most temporally similar to the upcoming test fold).
         n = len(train_events)
-        window = train_events[max(0, n - FOLD_WINDOW):]
+        # Use last ~1/3 of training (scale-invariant: = one test fold's worth
+        # for walk-forward fold 3, regardless of total data size).
+        # At 100k rows: ~25k events → count≈617 < 1000 → size=0.5 (unchanged).
+        # At 1M rows:  ~250k events → count≈6137 > 1000 → size=500/6137≈0.08
+        #   → ALL qualifying events fire, cap exactly filled → full PnL at high density.
+        window = train_events[n * 2 // 3:]  # last ~33% of training
         counts: dict[str, int] = defaultdict(int)
         for event in window:
             if float(event["price_yes"]) <= self.buy_yes_below:
@@ -53,12 +55,11 @@ class ThresholdEdgeStrategy(Strategy):
 
         self._market_sizes = {}
         for market_id, count in counts.items():
-            if count >= 5:
-                # size = cap / count fills the cap in exactly `count` trades.
-                # Allow sizes above default (0.5) so data-limited markets hit cap too.
-                # Hard ceiling of 2.0 prevents outsized swings from very thin markets.
-                size = self.position_cap / count
-                self._market_sizes[market_id] = max(0.01, min(2.0, size))
+            if count >= 10:
+                # Optimal: fill cap in exactly `count` trades
+                optimal = self.position_cap / count
+                # Cap at default_size; don't go below 0.01 to avoid dust orders
+                self._market_sizes[market_id] = max(0.01, min(self.order_size, optimal))
 
     def on_event(self, state: dict[str, Any]) -> Order | None:
         p = float(state["yes_price"])
