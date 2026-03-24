@@ -105,10 +105,43 @@ class OnlineLogisticLikeStrategy(Strategy):
         return None
 
 
+@dataclass
+class DeepValueYesStrategy(Strategy):
+    """Buy YES at very low prices (deep value), exit when price recovers."""
+    name: str = "deep_value_yes"
+    entry_below: float = 0.15
+    exit_above: float = 0.35
+    order_size: float = 1.0
+
+    def __post_init__(self) -> None:
+        self._position: dict[str, float] = {}
+
+    def reset(self) -> None:
+        self._position.clear()
+
+    def on_event(self, state: dict[str, Any]) -> Order | None:
+        p = float(state["yes_price"])
+        mid = state["market_id"]
+        pos = self._position.get(mid, 0.0)
+
+        # Exit: reduce position when price has recovered
+        if pos > 0 and p >= self.exit_above:
+            self._position[mid] = 0.0
+            return Order(market_id=mid, side="yes", contracts=-pos, reason=self.name)
+
+        # Entry: buy YES at deep value prices
+        if p <= self.entry_below:
+            self._position[mid] = pos + self.order_size
+            return Order(market_id=mid, side="yes", contracts=self.order_size, reason=self.name)
+
+        return None
+
+
 def default_strategy_registry() -> list[Strategy]:
     return [
         ThresholdEdgeStrategy(),
         MeanReversionStrategy(),
         OnlineLogisticLikeStrategy(),
+        DeepValueYesStrategy(),
     ]
 
