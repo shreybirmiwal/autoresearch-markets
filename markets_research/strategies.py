@@ -316,6 +316,50 @@ class UltraConservativeStrategy(Strategy):
         return None
 
 
+@dataclass
+class QuadraticLogisticStrategy(Strategy):
+    """Online logistic with quadratic and interaction features.
+    Features: [1, price, price^2, log(size), price*log(size)]
+    This can learn non-linear patterns like buy both at very low and very high prices."""
+    name: str = "quadratic_logistic"
+    lr: float = 0.03
+    edge_threshold: float = 0.05
+    order_size: float = 1.0
+
+    def __post_init__(self) -> None:
+        self._w = np.zeros(5, dtype=np.float64)
+
+    def reset(self) -> None:
+        self._w[:] = 0.0
+
+    def _features(self, price: float, size: float) -> np.ndarray:
+        log_size = np.log1p(size)
+        return np.array([1.0, price, price**2, log_size, price * log_size], dtype=np.float64)
+
+    def fit(self, train_events: list[dict[str, Any]]) -> None:
+        for event in train_events:
+            px = float(event.get("yes_price", event.get("price_yes", 0.5)))
+            sz = float(event["size"])
+            x = self._features(px, sz)
+            y = float(event.get("label", 0.5))
+            pred = 1.0 / (1.0 + np.exp(-float(np.dot(self._w, x))))
+            grad = (pred - y) * x
+            self._w -= self.lr * grad
+
+    def on_event(self, state: dict[str, Any]) -> Order | None:
+        p = float(state["yes_price"])
+        sz = float(state["size"])
+        x = self._features(p, sz)
+        pred_yes = 1.0 / (1.0 + np.exp(-float(np.dot(self._w, x))))
+
+        # Only trade with an absolute price cap to avoid high-price YES buys
+        if p < 0.50 and pred_yes - p > self.edge_threshold:
+            return Order(market_id=state["market_id"], side="yes", contracts=self.order_size, reason=self.name)
+        if p > 0.50 and p - pred_yes > self.edge_threshold:
+            return Order(market_id=state["market_id"], side="no", contracts=self.order_size, reason=self.name)
+        return None
+
+
 def default_strategy_registry() -> list[Strategy]:
     return [
         ThresholdEdgeStrategy(),
@@ -324,5 +368,5 @@ def default_strategy_registry() -> list[Strategy]:
         MidThresholdStrategy(),
         AsymmetricThreshold80Strategy(),
         Yes36NO80Strategy(),
-        UltraConservativeStrategy(),
+        QuadraticLogisticStrategy(),
     ]
