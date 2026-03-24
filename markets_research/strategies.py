@@ -163,37 +163,49 @@ class LargeTradeFollowerStrategy(Strategy):
 
 
 @dataclass
-class GlobalSequenceGatedStrategy(Strategy):
-    """Threshold strategy gated on global cross-market sequence state.
+class BurstMarketThresholdStrategy(Strategy):
+    """Trade only during same-market burst periods for predictable execution.
 
-    Mechanism: The backtest executes orders at the NEXT sequential row's price,
-    regardless of which market it's from. When a high-price market trades right after
-    a YES buy signal, the order executes at that high price → loss. By only placing
-    orders when the previous global event was also at a low price, execution is more
-    likely to happen at a low-price event (maintaining edge).
+    Mechanism: In the backtest, order execution uses the NEXT sequential row's price
+    (regardless of market). When one market is "burst trading" (N consecutive events),
+    the next event is from the same market → execution price is predictable and at the
+    same market's level. By trading only during bursts of low-price markets, we ensure
+    YES buys execute at the low price of the bursting market, not at some random
+    high-price market's price.
     """
 
-    name: str = "global_sequence_gated"
-    buy_yes_below: float = 0.42
-    buy_no_above: float = 0.58
-    gate_yes_below: float = 0.45  # only buy YES if last global price < this
-    gate_no_above: float = 0.55   # only buy NO if last global price > this
+    name: str = "burst_market_threshold"
+    buy_yes_below: float = 0.40
+    buy_no_above: float = 0.60
+    burst_min: int = 2  # require at least this many consecutive same-market events
     order_size: float = 1.0
 
     def __post_init__(self) -> None:
-        self._last_price: float = 0.5  # global last price across all markets
+        self._last_market_id: str = ""
+        self._same_market_count: int = 0
 
     def reset(self) -> None:
-        self._last_price = 0.5
+        self._last_market_id = ""
+        self._same_market_count = 0
 
     def on_event(self, state: dict[str, Any]) -> Order | None:
+        mid = str(state["market_id"])
         p = float(state["yes_price"])
-        last_p = self._last_price
-        self._last_price = p  # update for next call
 
-        if p <= self.buy_yes_below and last_p <= self.gate_yes_below:
+        # Track burst count
+        if mid == self._last_market_id:
+            self._same_market_count += 1
+        else:
+            self._same_market_count = 1
+            self._last_market_id = mid
+
+        # Only trade during bursts (same market N consecutive times)
+        if self._same_market_count < self.burst_min:
+            return None
+
+        if p <= self.buy_yes_below:
             return Order(market_id=state["market_id"], side="yes", contracts=self.order_size, reason=self.name)
-        if p >= self.buy_no_above and last_p >= self.gate_no_above:
+        if p >= self.buy_no_above:
             return Order(market_id=state["market_id"], side="no", contracts=self.order_size, reason=self.name)
         return None
 
@@ -204,6 +216,6 @@ def default_strategy_registry() -> list[Strategy]:
         MeanReversionStrategy(),
         OnlineLogisticLikeStrategy(),
         LargeTradeFollowerStrategy(),
-        GlobalSequenceGatedStrategy(),
+        BurstMarketThresholdStrategy(),
     ]
 
