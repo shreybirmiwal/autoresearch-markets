@@ -133,11 +133,45 @@ class TightExitRecyclerStrategy(Strategy):
 
 
 
+@dataclass
+class RecyclingThresholdStrategy(Strategy):
+    """Wider buy range + above-mark exit: buy YES when p<=0.42, sell YES when p>=0.52.
+
+    Mechanism: ThresholdEdge (buy<=0.42, hold to mark=0.5) vs TightExitRecycler (buy<=0.38,
+    sell>=0.52). ThresholdEdge wins slightly due to wider buy range capturing more trades.
+    TightExitRecycler's exit at 0.52 (above mark) extracts more profit per exit.
+    Combining both: wider entry (0.42) + above-mark exit (0.52) should strictly dominate.
+    Buy at p<=0.42, exit at p>=0.52 = up to 0.10/contract locked profit vs 0.08 at mark.
+    Recycled capital re-enters at low prices for more cycles.
+    """
+
+    name: str = "recycling_threshold"
+    buy_yes_below: float = 0.42
+    sell_yes_above: float = 0.52
+    order_size: float = 1.0
+
+    def reset(self) -> None:
+        return None
+
+    def on_event(self, state: dict[str, Any]) -> Order | None:
+        p = float(state["yes_price"])
+        pos_yes = float(state["position_yes_contracts"])
+
+        if pos_yes > 0 and p >= self.sell_yes_above:
+            return Order(market_id=state["market_id"], side="yes", contracts=-pos_yes, reason=self.name)
+
+        if p <= self.buy_yes_below:
+            return Order(market_id=state["market_id"], side="yes", contracts=self.order_size, reason=self.name)
+
+        return None
+
+
 def default_strategy_registry() -> list[Strategy]:
     return [
         ThresholdEdgeStrategy(),
         MeanReversionStrategy(),
         OnlineLogisticLikeStrategy(),
         TightExitRecyclerStrategy(),
+        RecyclingThresholdStrategy(),
     ]
 
