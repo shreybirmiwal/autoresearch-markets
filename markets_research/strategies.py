@@ -388,6 +388,35 @@ class BenchmarkPassiveStrategy(Strategy):
         return None
 
 
+@dataclass
+class MidRangeStrategy(Strategy):
+    """Mid-range strategy: only trades when price is in 0.40-0.60 range.
+    This should perform poorly since mid-range prices have lowest edge."""
+    name: str = "mid_range"
+    min_price: float = 0.40
+    max_price: float = 0.60
+    order_size: float = 1.0
+
+    def __post_init__(self) -> None:
+        self._history: deque[float] = deque(maxlen=5)
+
+    def reset(self) -> None:
+        self._history.clear()
+
+    def on_event(self, state: dict[str, Any]) -> Order | None:
+        p = float(state["yes_price"])
+        self._history.append(p)
+        if len(self._history) < 5:
+            return None
+        if self.min_price <= p <= self.max_price:
+            # Simple momentum in mid-range (likely noise)
+            if p > np.mean(list(self._history)):
+                return Order(market_id=state["market_id"], side="yes", contracts=self.order_size, reason=self.name)
+            else:
+                return Order(market_id=state["market_id"], side="no", contracts=self.order_size, reason=self.name)
+        return None
+
+
 def default_strategy_registry() -> list[Strategy]:
     return [
         ThresholdEdgeStrategy(),
@@ -401,5 +430,6 @@ def default_strategy_registry() -> list[Strategy]:
         OrderFlowImbalanceStrategy(),
         HighConvictionLogisticStrategy(),
         BenchmarkPassiveStrategy(),
+        MidRangeStrategy(),
     ]
 
