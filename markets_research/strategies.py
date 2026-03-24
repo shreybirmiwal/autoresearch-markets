@@ -152,7 +152,7 @@ class HybridEdgeStrategy(Strategy):
     """
     name: str = "hybrid_edge"
     base_threshold: float = 0.45
-    extended_threshold: float = 0.58
+    extended_threshold: float = 0.62
     good_hour_start: int = 3
     good_hour_end: int = 11
     rolling_window: int = 20
