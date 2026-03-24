@@ -95,8 +95,6 @@ class OnlineLogisticLikeStrategy(Strategy):
         pred_yes = 1.0 / (1.0 + np.exp(-float(np.dot(self._w, x))))
         if pred_yes - float(state["yes_price"]) > 0.05:
             return Order(market_id=state["market_id"], side="yes", contracts=self.order_size, reason=self.name)
-        if float(state["yes_price"]) - pred_yes > 0.05:
-            return Order(market_id=state["market_id"], side="no", contracts=self.order_size, reason=self.name)
         return None
 
 
