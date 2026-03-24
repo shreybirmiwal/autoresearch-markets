@@ -166,6 +166,57 @@ class ExitAwareBandedStrategy(Strategy):
         return None
 
 
+@dataclass
+class MomentumFilteredBandedStrategy(Strategy):
+    """Buy YES in 0.20-0.42 only when NOT in a clear per-market downtrend.
+    Exit YES when price recovers above 0.55.
+    Mechanism: monotonically falling prices signal informed sellers — skip those.
+    Stable or recovering prices in the 0.20-0.42 band are genuine mispricings.
+    """
+    name: str = "momentum_filtered_banded"
+    yes_floor: float = 0.20
+    yes_ceil: float = 0.42
+    no_floor: float = 0.65
+    exit_yes_above: float = 0.55
+    trend_window: int = 5
+    order_size: float = 1.0
+
+    def __post_init__(self) -> None:
+        self._market_prices: dict = {}
+
+    def reset(self) -> None:
+        self._market_prices.clear()
+
+    def on_event(self, state: dict[str, Any]) -> Order | None:
+        p = float(state["yes_price"])
+        mid = state["market_id"]
+        pos_yes = float(state.get("position_yes_contracts", 0))
+
+        if mid not in self._market_prices:
+            self._market_prices[mid] = deque(maxlen=self.trend_window)
+        hist = self._market_prices[mid]
+        hist.append(p)
+
+        # Exit YES position when price has recovered sufficiently
+        if pos_yes > 0 and p >= self.exit_yes_above:
+            return Order(market_id=mid, side="yes", contracts=-pos_yes, reason=self.name)
+
+        # Buy YES only if NOT in a clear downtrend
+        if self.yes_floor <= p <= self.yes_ceil:
+            if len(hist) >= 3:
+                prices = list(hist)
+                is_falling = all(prices[i] > prices[i + 1] for i in range(len(prices) - 1))
+                if is_falling:
+                    return None
+            return Order(market_id=mid, side="yes", contracts=self.order_size, reason=self.name)
+
+        # Buy NO only in high-confidence range
+        if p >= self.no_floor:
+            return Order(market_id=mid, side="no", contracts=self.order_size, reason=self.name)
+
+        return None
+
+
 def default_strategy_registry() -> list[Strategy]:
     return [
         ThresholdEdgeStrategy(),
@@ -173,5 +224,6 @@ def default_strategy_registry() -> list[Strategy]:
         OnlineLogisticLikeStrategy(),
         BandedThresholdStrategy(),
         ExitAwareBandedStrategy(),
+        MomentumFilteredBandedStrategy(),
     ]
 
