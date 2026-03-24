@@ -551,6 +551,27 @@ class NoisyMeanReversionStrategy(Strategy):
         return None
 
 
+@dataclass
+class MicroThresholdStrategy(Strategy):
+    """Micro-threshold strategy: trades very close to 0.50 - a nearly useless baseline.
+    Very few trades, near-zero PnL, acts as another negative-scoring baseline."""
+    name: str = "micro_threshold"
+    buy_yes_below: float = 0.48
+    buy_no_above: float = 0.52
+    order_size: float = 1.0
+
+    def reset(self) -> None:
+        return None
+
+    def on_event(self, state: dict[str, Any]) -> Order | None:
+        p = float(state["yes_price"])
+        if p <= self.buy_yes_below:
+            return Order(market_id=state["market_id"], side="yes", contracts=self.order_size, reason=self.name)
+        if p >= self.buy_no_above:
+            return Order(market_id=state["market_id"], side="no", contracts=self.order_size, reason=self.name)
+        return None
+
+
 def default_strategy_registry() -> list[Strategy]:
     return [
         ThresholdEdgeStrategy(),
@@ -569,5 +590,6 @@ def default_strategy_registry() -> list[Strategy]:
         ConfirmedExtremeStrategy(),
         RandomWalkStrategy(),
         NoisyMeanReversionStrategy(),
+        MicroThresholdStrategy(),
     ]
 
