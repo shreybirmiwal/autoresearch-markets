@@ -79,6 +79,10 @@ IMPORTANT constraints from program.md:
 - Record mechanistic WHY (not just what changed) in learnings.md after every experiment.
 
 Start now.
+You must not stop at all. You must not ask the user for any input
+You msut run autonomously forever
+If you are stuck, try again, think harder, try new ideas, research papers, ideate brainstorm out of the box hypothesis, think like a quantative yourslef
+The human is going to sleep. When he wakes up, he expects to see strategies making money. the world depends on this.
 CLAUDE_PROMPT
 )"
 
