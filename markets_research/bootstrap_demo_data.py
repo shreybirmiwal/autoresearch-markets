@@ -66,7 +66,7 @@ def generate_demo_data(out_dir: Path, seed: int = 7) -> None:
         SnapshotManifest(
             snapshot_id=snapshot_id,
             venue="kalshi",
-            created_at_utc=pd.Timestamp.utcnow().isoformat(),
+            created_at_utc=pd.Timestamp.now("UTC").isoformat(),
             start_ts=None,
             end_ts=None,
             records={"trades": int(len(trades_df)), "markets": int(len(markets_df))},

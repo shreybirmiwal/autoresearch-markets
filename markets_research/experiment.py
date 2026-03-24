@@ -43,16 +43,58 @@ def _walk_forward_splits(df: pd.DataFrame, folds: int = 3) -> list[tuple[pd.Data
     return splits
 
 
+def _build_next_tick_labels(train_df: pd.DataFrame) -> pd.Series:
+    """
+    Build leakage-safe labels from next tick movement per market.
+    label=1 when next yes price is higher, else 0.
+    """
+    ordered = train_df.sort_values(["market_id", "event_ts"]).copy()
+    next_price = ordered.groupby("market_id")["price_yes"].shift(-1)
+    labels = (next_price > ordered["price_yes"]).astype(float).fillna(0.5)
+    labels.index = ordered.index
+    return labels.reindex(train_df.index).fillna(0.5)
+
+
+def _filter_market_universe(
+    trades: pd.DataFrame,
+    markets: pd.DataFrame,
+    category: str | None,
+    top_n_markets: int,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    out_markets = markets.copy()
+    if category:
+        out_markets = out_markets[out_markets["category"].astype(str).str.lower() == category.lower()].copy()
+    if out_markets.empty:
+        return trades.iloc[0:0].copy(), out_markets
+    counts = trades["market_id"].value_counts()
+    keep = set(counts.head(max(1, top_n_markets)).index)
+    keep = keep.intersection(set(out_markets["market_id"].astype(str).tolist()))
+    out_trades = trades[trades["market_id"].astype(str).isin(keep)].copy()
+    out_markets = out_markets[out_markets["market_id"].astype(str).isin(keep)].copy()
+    return out_trades, out_markets
+
+
 def run_tournament(
     data_root: Path,
     output_dir: Path,
     backtest_cfg: BacktestConfig,
     strategies: list[Strategy] | None = None,
+    market_category: str | None = None,
+    top_n_markets: int = 200,
 ) -> dict[str, Path]:
     strategies = strategies or default_strategy_registry()
     trades = _load_latest_trades(data_root)
     markets = _load_latest_markets(data_root)
-    settlement = markets.set_index("market_id")["settlement_price_yes"].fillna(0.5)
+    trades, markets = _filter_market_universe(trades, markets, market_category, top_n_markets)
+    if trades.empty or markets.empty:
+        raise ValueError("No markets/trades left after universe filtering. Adjust --market-category/--top-n-markets.")
+    settlement = (
+        markets.sort_values("snapshot_id")
+        .groupby("market_id", as_index=False)["settlement_price_yes"]
+        .last()
+        .set_index("market_id")["settlement_price_yes"]
+        .fillna(0.5)
+    )
 
     rows: list[dict[str, float | str]] = []
     attribution_outputs: list[pd.DataFrame] = []
@@ -60,7 +102,7 @@ def run_tournament(
         strategy.reset()
         fold_metrics: list[dict[str, float]] = []
         for train_df, test_df in _walk_forward_splits(trades, folds=3):
-            labels = train_df["market_id"].map(settlement).fillna(train_df["price_yes"]).astype(float)
+            labels = _build_next_tick_labels(train_df)
             train_events = train_df.assign(label=labels).to_dict(orient="records")
             strategy.fit(train_events)
             equity, fills = run_backtest(test_df, settlement, strategy, backtest_cfg)
@@ -108,6 +150,8 @@ def main() -> None:
     parser.add_argument("--slippage-bps", type=float, default=5.0)
     parser.add_argument("--latency-events", type=int, default=1)
     parser.add_argument("--max-position-contracts", type=float, default=500.0)
+    parser.add_argument("--market-category", type=str, default=None)
+    parser.add_argument("--top-n-markets", type=int, default=200)
     args = parser.parse_args()
 
     paths = run_tournament(
@@ -120,6 +164,8 @@ def main() -> None:
             slippage_bps=args.slippage_bps,
             latency_events=args.latency_events,
         ),
+        market_category=args.market_category,
+        top_n_markets=args.top_n_markets,
     )
     print("wrote artifacts:")
     for name, path in paths.items():

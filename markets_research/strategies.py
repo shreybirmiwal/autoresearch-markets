@@ -88,7 +88,8 @@ class OnlineLogisticLikeStrategy(Strategy):
 
     def fit(self, train_events: list[dict[str, Any]]) -> None:
         for event in train_events:
-            x = np.array([1.0, float(event["yes_price"]), np.log1p(float(event["size"]))], dtype=np.float64)
+            px = float(event.get("yes_price", event.get("price_yes", 0.5)))
+            x = np.array([1.0, px, np.log1p(float(event["size"]))], dtype=np.float64)
             y = float(event.get("label", 0.5))
             pred = 1.0 / (1.0 + np.exp(-float(np.dot(self._w, x))))
             grad = (pred - y) * x
