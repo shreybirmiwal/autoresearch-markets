@@ -410,5 +410,5 @@ def default_strategy_registry() -> list[Strategy]:
         MidThresholdStrategy(),
         AsymmetricThreshold80Strategy(),
         Yes36NO80Strategy(),
-        MarketAdaptiveThresholdStrategy(),
+        MarketSentimentThresholdStrategy(),
     ]
