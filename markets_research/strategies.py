@@ -233,4 +233,5 @@ class HybridEdgeStrategy(Strategy):
 def default_strategy_registry() -> list[Strategy]:
     return [
         HybridEdgeStrategy(),
+        ThresholdEdgeStrategy(buy_yes_below=0.55),
     ]
