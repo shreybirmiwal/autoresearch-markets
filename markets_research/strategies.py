@@ -140,45 +140,11 @@ class TightExitRecyclerStrategy(Strategy):
 
 
 
-@dataclass
-class MicroExitRecyclerStrategy(Strategy):
-    """Recycler with very low exit threshold to capture sell-side windfall executions.
-
-    Mechanism: Cross-market execution means ~27% of sell orders execute at high-price
-    market events (YES>0.5). By triggering exits very frequently (even at tiny price
-    moves in ultra-low markets), we maximize the NUMBER of sell orders placed, giving
-    more chances for windfall executions at high-price events. Each windfall
-    (sell YES at 0.65 when entry was 0.005) generates 0.645 per contract vs
-    0.495 from hold-to-mark. More cycles × expected windfall edge > hold-to-mark.
-    """
-
-    name: str = "micro_exit_recycler"
-    buy_yes_below: float = 0.38
-    sell_yes_above: float = 0.02  # triggers in ultra-low markets when tiny price rise
-    order_size: float = 1.0
-
-    def reset(self) -> None:
-        return None
-
-    def on_event(self, state: dict[str, Any]) -> Order | None:
-        p = float(state["yes_price"])
-        pos_yes = float(state["position_yes_contracts"])
-
-        if pos_yes > 0 and p >= self.sell_yes_above:
-            return Order(market_id=state["market_id"], side="yes", contracts=-pos_yes, reason=self.name)
-
-        if p <= self.buy_yes_below:
-            return Order(market_id=state["market_id"], side="yes", contracts=self.order_size, reason=self.name)
-
-        return None
-
-
 def default_strategy_registry() -> list[Strategy]:
     return [
         ThresholdEdgeStrategy(),
         MeanReversionStrategy(),
         OnlineLogisticLikeStrategy(),
         TightExitRecyclerStrategy(),
-        MicroExitRecyclerStrategy(),
     ]
 
