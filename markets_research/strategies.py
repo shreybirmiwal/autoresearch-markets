@@ -356,26 +356,24 @@ class HybridThresholdLogisticStrategy(Strategy):
 
 
 @dataclass
-class MarketAdaptiveThresholdStrategy(Strategy):
-    """Per-market adaptive threshold: learn each market's price distribution
-    during training, then trade more aggressively in markets where YES<0.36 is
-    historically correlated with high future prices (mean reversion type)."""
-    name: str = "market_adaptive_threshold"
+class MarketSentimentThresholdStrategy(Strategy):
+    """Learn per-market average price in training. In markets where average YES price
+    was historically ABOVE 0.5 (bullish market), the low prices are more likely to
+    be temporary - so trade those. Skip markets where avg price was below 0.5
+    (bearish markets where low prices might continue to fall)."""
+    name: str = "market_sentiment_threshold"
     buy_yes_below: float = 0.36
     buy_no_above: float = 0.80
     order_size: float = 1.0
 
     def __post_init__(self) -> None:
-        # market_id -> average price (learned from training)
-        self._market_avg_price: dict[str, float] = {}
-        self._market_price_std: dict[str, float] = {}
+        self._bullish_markets: set = set()
 
     def reset(self) -> None:
-        self._market_avg_price.clear()
-        self._market_price_std.clear()
+        self._bullish_markets.clear()
 
     def fit(self, train_events: list[dict[str, Any]]) -> None:
-        """Learn per-market price statistics from training data."""
+        """Learn which markets are bullish (avg_price > 0.5) from training data."""
         from collections import defaultdict
         market_prices: dict = defaultdict(list)
         for event in train_events:
@@ -383,26 +381,22 @@ class MarketAdaptiveThresholdStrategy(Strategy):
             px = float(event.get("yes_price", event.get("price_yes", 0.5)))
             market_prices[mid].append(px)
 
-        for mid, prices in market_prices.items():
-            arr = np.array(prices)
-            self._market_avg_price[mid] = float(arr.mean())
-            self._market_price_std[mid] = float(arr.std())
+        self._bullish_markets = {
+            mid for mid, prices in market_prices.items()
+            if np.mean(prices) > 0.5
+        }
 
     def on_event(self, state: dict[str, Any]) -> Order | None:
         p = float(state["yes_price"])
         mid = str(state["market_id"])
 
-        # Get market statistics
-        avg_price = self._market_avg_price.get(mid, 0.5)
-        price_std = self._market_price_std.get(mid, 0.15)
-
-        # Only trade markets with meaningful price variation (not stuck at one level)
-        if price_std < 0.05:
+        # For YES buys: only trade bullish markets (historically above 0.5)
+        if p <= self.buy_yes_below:
+            if mid in self._bullish_markets:
+                return Order(market_id=state["market_id"], side="yes", contracts=self.order_size, reason=self.name)
             return None
 
-        # Standard threshold trades
-        if p <= self.buy_yes_below:
-            return Order(market_id=state["market_id"], side="yes", contracts=self.order_size, reason=self.name)
+        # For NO buys: only in markets where price is currently high
         if p >= self.buy_no_above:
             return Order(market_id=state["market_id"], side="no", contracts=self.order_size, reason=self.name)
         return None
