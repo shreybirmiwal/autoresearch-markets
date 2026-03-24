@@ -79,10 +79,26 @@ def _price_yes(price: pd.Series, nonusdc_side: pd.Series,
     return price.where(traded_token_is_yes, 1.0 - price).clip(0.0, 1.0)
 
 
-def build_market_objects(markets_df: pd.DataFrame, snapshot_id: str) -> list[Market]:
+def _infer_settlement(last_price: float | None) -> float | None:
+    """Infer YES settlement price from last traded price: >0.95 → 1.0, <0.05 → 0.0, else None."""
+    if last_price is None or (isinstance(last_price, float) and pd.isna(last_price)):
+        return None
+    if last_price > 0.95:
+        return 1.0
+    if last_price < 0.05:
+        return 0.0
+    return None  # ambiguous resolution
+
+
+def build_market_objects(
+    markets_df: pd.DataFrame,
+    snapshot_id: str,
+    last_price_yes: "dict[str, float] | None" = None,
+) -> list[Market]:
     out = []
     for market_id, row in markets_df.iterrows():
         ticker = str(row.get("ticker") or row.get("market_slug") or market_id)
+        lp = last_price_yes.get(str(market_id)) if last_price_yes else None
         out.append(
             Market(
                 venue="polymarket",
@@ -95,7 +111,7 @@ def build_market_objects(markets_df: pd.DataFrame, snapshot_id: str) -> list[Mar
                 strike_info=None,
                 category=None,
                 is_resolved=bool(row.get("closedTime")),
-                settlement_price_yes=None,  # not available in this dataset
+                settlement_price_yes=_infer_settlement(lp),
                 fee_bps=0.0,
                 snapshot_id=snapshot_id,
             )
@@ -117,17 +133,6 @@ def run(
     kept_ids = set(markets_df.index.astype(str))
     print(f"  Kept {len(kept_ids)} markets")
 
-    market_objects = build_market_objects(markets_df, snapshot_id)
-    mdf = markets_to_frame(market_objects)
-    mdf["date"] = pd.to_datetime(
-        mdf["settled_ts"].fillna(mdf["close_ts"]).fillna(mdf["open_ts"]), utc=True
-    ).dt.strftime("%Y-%m-%d")
-    # Flat parquet (same reason as trades: avoid partitioned-directory glob collision)
-    markets_path = out_dir / "markets" / f"{snapshot_id}.parquet"
-    markets_path.parent.mkdir(parents=True, exist_ok=True)
-    mdf.to_parquet(markets_path, engine="pyarrow", index=False)
-    print(f"  Markets written: {len(mdf)}")
-
     # Build per-market lookup series for vectorised YES/NO mapping
     a1 = markets_df["answer1_lower"]
     a2 = markets_df["answer2_lower"]
@@ -135,6 +140,8 @@ def run(
     print(f"Streaming trades CSV in chunks of {_CHUNK:,}...")
     total_trades = 0
     all_trade_chunks: list[pd.DataFrame] = []
+    # Track last-seen price_yes per market for settlement inference
+    last_price_by_market: dict[str, tuple[pd.Timestamp, float]] = {}
 
     for chunk_idx, chunk in enumerate(pd.read_csv(trades_csv, chunksize=_CHUNK, low_memory=False)):
         chunk["market_id"] = chunk["market_id"].astype(str)
@@ -174,10 +181,35 @@ def run(
             "snapshot_id": snapshot_id,
         })
 
+        # Track last price per market for settlement inference
+        chunk_last = (
+            tdf.sort_values("event_ts")
+            .groupby("market_id")[["event_ts", "price_yes"]]
+            .last()
+        )
+        for mid, row in chunk_last.iterrows():
+            ts, p = row["event_ts"], row["price_yes"]
+            prev = last_price_by_market.get(str(mid))
+            if prev is None or ts >= prev[0]:
+                last_price_by_market[str(mid)] = (ts, float(p))
+
         all_trade_chunks.append(tdf)
         total_trades += len(tdf)
         if chunk_idx % 10 == 0:
             print(f"  chunk {chunk_idx}: {len(tdf):,} rows kept (total so far: {total_trades:,})")
+
+    # Build market objects now that we have last prices for settlement inference
+    last_price_yes = {mid: lp for mid, (_, lp) in last_price_by_market.items()}
+    market_objects = build_market_objects(markets_df, snapshot_id, last_price_yes)
+    mdf = markets_to_frame(market_objects)
+    mdf["date"] = pd.to_datetime(
+        mdf["settled_ts"].fillna(mdf["close_ts"]).fillna(mdf["open_ts"]), utc=True
+    ).dt.strftime("%Y-%m-%d")
+    markets_path = out_dir / "markets" / f"{snapshot_id}.parquet"
+    markets_path.parent.mkdir(parents=True, exist_ok=True)
+    mdf.to_parquet(markets_path, engine="pyarrow", index=False)
+    n_settled = mdf["settlement_price_yes"].notna().sum()
+    print(f"  Markets written: {len(mdf)} ({n_settled} with inferred settlement price)")
 
     if all_trade_chunks:
         full_tdf = pd.concat(all_trade_chunks, ignore_index=True)
