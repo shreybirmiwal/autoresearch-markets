@@ -39,15 +39,15 @@ class ThresholdEdgeStrategy(Strategy):
         return None
 
     def fit(self, train_events: list[dict[str, Any]]) -> None:
-        # Count qualifying events per market in the LAST quarter of training data
-        # (most temporally similar to the upcoming test fold).
+        # Count qualifying events per market in a window matching the test fold size.
+        # For 4-fold walk-forward CV with 100k rows: test fold = 25k events.
+        # Folds 1,2,3 have training sizes 25k,50k,75k.  Using last min(n, 25000) events
+        # gives count≈1250/market for ultra-low markets in ALL folds, so
+        # optimal=500/1250=0.40 consistently — folds 1 & 2 no longer waste events.
+        # (With n*2//3 window: fold 1 gets 8k events → count≈417 → fit gives size=0.65
+        #  → cap hits at 769 trades, 481 qualifying events wasted per market.)
         n = len(train_events)
-        # Use last ~1/3 of training (scale-invariant: = one test fold's worth
-        # for walk-forward fold 3, regardless of total data size).
-        # At 100k rows: ~25k events → count≈617 < 769 → size=0.65 (unchanged for data-limited).
-        # Cap-limited market (count>769): optimal<0.65 → fit reduces size to fill cap in all events.
-        # At 1M rows:  ~250k events → count≈6137 > 769 → size=500/6137≈0.08 → full density.
-        window = train_events[n * 2 // 3:]  # last ~33% of training
+        window = train_events[max(0, n - 25000):]
         counts: dict[str, int] = defaultdict(int)
         for event in window:
             if float(event["price_yes"]) <= self.buy_yes_below:
