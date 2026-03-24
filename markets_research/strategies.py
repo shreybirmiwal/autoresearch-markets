@@ -270,9 +270,10 @@ class ExitAwareBandedStrategy(Strategy):
         if pos_yes > 0 and p >= self.exit_yes_above:
             return Order(market_id=state["market_id"], side="yes", contracts=-pos_yes, reason=self.name + "_exit_yes")
 
-        # Enter YES in cheap band
+        # Enter YES in cheap band with confidence-scaled sizing
         if self.buy_yes_low < p <= self.buy_yes_high:
-            return Order(market_id=state["market_id"], side="yes", contracts=self.order_size, reason=self.name)
+            contracts = min(3.0, max(1.0, (0.50 - p) / 0.10))
+            return Order(market_id=state["market_id"], side="yes", contracts=contracts, reason=self.name)
 
         # Enter NO when YES is expensive (short expensive YES)
         if p > self.buy_no_above:
