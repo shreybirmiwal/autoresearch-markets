@@ -260,19 +260,21 @@ class VeryTightExitRecyclerStrategy(Strategy):
 
 
 @dataclass
-class WiderBuyRecyclerStrategy(Strategy):
-    """Recycler with wider buy threshold (0.42) + tight exit (0.52).
+class FullCycleRecyclerStrategy(Strategy):
+    """Full-cycle recycler trading both YES and NO directions with above-mark exits.
 
-    Mechanism: The 0.20-0.40 YES price range averages 0.157 PnL per trade (profitable).
-    Extending the buy threshold to 0.42 (same as threshold_edge) captures these
-    additional profitable trades while using the tight exit (0.52) for recycling.
-    Adding ~1500 extra profitable trades in the 0.38-0.42 range should increase
-    total PnL while maintaining the recycling benefit.
+    Mechanism: Market 253591 (3.9M trades) oscillates between YES=0.44 and YES=0.999.
+    YES side: buy when YES<0.38, exit when YES>0.52 (same as tight_exit_recycler).
+    NO side: buy NO when YES>0.62 (NO price<0.38), exit when YES<0.48 (NO price>0.52,
+    above NO mark of 0.5). Market 253591 cycling creates recurring profitable NO trades.
+    Both sides settle at 0.5 mark, so exits above mark on both sides beat hold-to-mark.
     """
 
-    name: str = "wider_buy_recycler"
-    buy_yes_below: float = 0.42
+    name: str = "full_cycle_recycler"
+    buy_yes_below: float = 0.38
     sell_yes_above: float = 0.52
+    buy_no_above_yes: float = 0.62   # buy NO when YES > this (NO price < 0.38)
+    sell_no_below_yes: float = 0.48  # exit NO when YES < this (NO price > 0.52)
     order_size: float = 1.0
 
     def reset(self) -> None:
@@ -281,12 +283,23 @@ class WiderBuyRecyclerStrategy(Strategy):
     def on_event(self, state: dict[str, Any]) -> Order | None:
         p = float(state["yes_price"])
         pos_yes = float(state["position_yes_contracts"])
+        pos_no = float(state["position_no_contracts"])
 
+        # Exit YES when above YES mark
         if pos_yes > 0 and p >= self.sell_yes_above:
             return Order(market_id=state["market_id"], side="yes", contracts=-pos_yes, reason=self.name)
 
+        # Exit NO when YES drops (NO is now above NO mark)
+        if pos_no > 0 and p <= self.sell_no_below_yes:
+            return Order(market_id=state["market_id"], side="no", contracts=-pos_no, reason=self.name)
+
+        # Buy YES cheap
         if p <= self.buy_yes_below:
             return Order(market_id=state["market_id"], side="yes", contracts=self.order_size, reason=self.name)
+
+        # Buy NO when YES is expensive (NO is cheap)
+        if p >= self.buy_no_above_yes:
+            return Order(market_id=state["market_id"], side="no", contracts=self.order_size, reason=self.name)
 
         return None
 
@@ -300,6 +313,6 @@ def default_strategy_registry() -> list[Strategy]:
         AboveMarkRecyclerStrategy(),
         TightExitRecyclerStrategy(),
         VeryTightExitRecyclerStrategy(),
-        WiderBuyRecyclerStrategy(),
+        FullCycleRecyclerStrategy(),
     ]
 
