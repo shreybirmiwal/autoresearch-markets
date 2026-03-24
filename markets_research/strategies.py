@@ -494,6 +494,31 @@ class ConfirmedExtremeStrategy(Strategy):
         return None
 
 
+@dataclass
+class RandomWalkStrategy(Strategy):
+    """Alternates between YES and NO on every 3rd tick regardless of price.
+    No market information used - this is a pure random baseline.
+    Should have near-zero expected PnL but high turnover costs, creating a negative baseline."""
+    name: str = "random_walk"
+    order_size: float = 1.0
+
+    def __post_init__(self) -> None:
+        self._tick_count: int = 0
+
+    def reset(self) -> None:
+        self._tick_count = 0
+
+    def on_event(self, state: dict[str, Any]) -> Order | None:
+        self._tick_count += 1
+        if self._tick_count % 7 == 0:
+            p = float(state["yes_price"])
+            # Trade in mid-range only to avoid any extreme-price edge
+            if 0.35 <= p <= 0.65:
+                side = "yes" if self._tick_count % 14 < 7 else "no"
+                return Order(market_id=state["market_id"], side=side, contracts=self.order_size, reason=self.name)
+        return None
+
+
 def default_strategy_registry() -> list[Strategy]:
     return [
         ThresholdEdgeStrategy(),
@@ -510,5 +535,6 @@ def default_strategy_registry() -> list[Strategy]:
         MidRangeStrategy(),
         TrendFollowingBadStrategy(),
         ConfirmedExtremeStrategy(),
+        RandomWalkStrategy(),
     ]
 
