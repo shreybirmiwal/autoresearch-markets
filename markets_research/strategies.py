@@ -32,10 +32,14 @@ class HybridEdgeStrategy(Strategy):
     Mechanism:
       1. Base: always buy YES ≤ 0.45.
       2. Extended (0.45-0.60): buy when continuation (not market switch) AND
-         (good hours UTC 3-11 OR ≥40% of last 5 events were cheap).
+         (good hours UTC 3-11 OR ≥40% of last 5 global events were cheap
+          OR ≥40% of last 5 events from THIS SPECIFIC MARKET were cheap).
       3. Market-switch gate: skip extended at first event from any market (run_pos=1).
          Empirical: market-switch extended events have 11% cheap execution → unprofitable.
          Continuation events (run_pos≥2) have 48% cheap execution — very good.
+    Per-market cluster: when a specific market has been running cheap locally,
+    it signals that market's own execution environment is favorable even if
+    the global sequence is mixed.
     fit() uses n*2//3 window to estimate adaptive order sizes per market.
     """
     name: str = "hybrid_edge"
@@ -51,6 +55,7 @@ class HybridEdgeStrategy(Strategy):
     def reset(self) -> None:
         self._market_sizes: dict[str, float] = {}
         self._recent_prices: deque = deque(maxlen=self.rolling_window)
+        self._market_recent_prices: dict[str, deque] = {}
         self._prev_market_id: Any = None
         return None
 
@@ -60,13 +65,20 @@ class HybridEdgeStrategy(Strategy):
         except Exception:
             return None
 
-    def _cheap_conditions(self, ts: Any) -> bool:
+    def _cheap_conditions(self, ts: Any, market_id: Any) -> bool:
         h = self._hour_of(ts)
         if h is not None and self.good_hour_start <= h <= self.good_hour_end:
             return True
         if len(self._recent_prices) >= self.rolling_window:
             cheap_frac = sum(1 for p in self._recent_prices if p <= self.base_threshold) / self.rolling_window
             if cheap_frac >= self.cheap_fraction_min:
+                return True
+        # Per-market cluster: this market's own recent price history
+        mid = str(market_id)
+        mprices = self._market_recent_prices.get(mid)
+        if mprices is not None and len(mprices) >= self.rolling_window:
+            mfrac = sum(1 for p in mprices if p <= self.base_threshold) / self.rolling_window
+            if mfrac >= self.cheap_fraction_min:
                 return True
         return False
 
@@ -76,13 +88,14 @@ class HybridEdgeStrategy(Strategy):
         if price <= self.extended_threshold:
             if market_id != self._prev_market_id:
                 return False  # market-switch gate
-            return self._cheap_conditions(ts)
+            return self._cheap_conditions(ts, market_id)
         return False
 
     def fit(self, train_events: list[dict[str, Any]]) -> None:
         n = len(train_events)
         window = train_events[n * 2 // 3:]
         recent: deque = deque(maxlen=self.rolling_window)
+        market_recent: dict[str, deque] = {}
         prev_mid: Any = None
         counts: dict[str, int] = defaultdict(int)
         for event in window:
@@ -100,9 +113,16 @@ class HybridEdgeStrategy(Strategy):
                     cheap_frac = sum(1 for rp in recent if rp <= self.base_threshold) / self.rolling_window
                     if cheap_frac >= self.cheap_fraction_min:
                         qualifies = True
+                elif mid in market_recent and len(market_recent[mid]) >= self.rolling_window:
+                    mfrac = sum(1 for rp in market_recent[mid] if rp <= self.base_threshold) / self.rolling_window
+                    if mfrac >= self.cheap_fraction_min:
+                        qualifies = True
             if qualifies:
                 counts[mid] += 1
             recent.append(p)
+            if mid not in market_recent:
+                market_recent[mid] = deque(maxlen=self.rolling_window)
+            market_recent[mid].append(p)
             prev_mid = mid
 
         self._market_sizes = {}
@@ -116,6 +136,10 @@ class HybridEdgeStrategy(Strategy):
         market_id = state["market_id"]
         qualifies = self._qualifies(p, state.get("event_ts"), market_id)
         self._recent_prices.append(p)
+        mid = str(market_id)
+        if mid not in self._market_recent_prices:
+            self._market_recent_prices[mid] = deque(maxlen=self.rolling_window)
+        self._market_recent_prices[mid].append(p)
         self._prev_market_id = market_id
         if qualifies:
             mid = str(market_id)
