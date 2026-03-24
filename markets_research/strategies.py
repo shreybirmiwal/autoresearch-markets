@@ -31,7 +31,7 @@ class ThresholdEdgeStrategy(Strategy):
     """
     name: str = "threshold_edge"
     buy_yes_below: float = 0.45
-    order_size: float = 0.8
+    order_size: float = 0.65
     position_cap: float = 500.0
 
     def reset(self) -> None:
@@ -44,9 +44,9 @@ class ThresholdEdgeStrategy(Strategy):
         n = len(train_events)
         # Use last ~1/3 of training (scale-invariant: = one test fold's worth
         # for walk-forward fold 3, regardless of total data size).
-        # At 100k rows: data-limited markets (count<625) get default size; cap-limited get optimal.
-        # Cap-limited markets (count>625): optimal<0.8 → fit reduces size to fill cap in all events.
-        # At 1M rows:  ~250k events → count≈6137 → size=500/6137≈0.08 → full density.
+        # At 100k rows: ~25k events → count≈617 < 769 → size=0.65 (unchanged for data-limited).
+        # Cap-limited market (count>769): optimal<0.65 → fit reduces size to fill cap in all events.
+        # At 1M rows:  ~250k events → count≈6137 > 769 → size=500/6137≈0.08 → full density.
         window = train_events[n * 2 // 3:]  # last ~33% of training
         counts: dict[str, int] = defaultdict(int)
         for event in window:
