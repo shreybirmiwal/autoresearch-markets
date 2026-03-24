@@ -31,7 +31,7 @@ class ThresholdEdgeStrategy(Strategy):
     """
     name: str = "threshold_edge"
     buy_yes_below: float = 0.45
-    order_size: float = 0.65
+    order_size: float = 0.70
     position_cap: float = 500.0
 
     def reset(self) -> None:
