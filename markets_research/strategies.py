@@ -153,11 +153,62 @@ class TrendFilteredThresholdStrategy(Strategy):
         return None
 
 
+@dataclass
+class ConfidenceScaledStrategy(Strategy):
+    """Size positions proportional to conviction: larger when price is in the sweet spot.
+
+    Mechanism: Data shows YES buys in (0.20, 0.42] have avg pnl ~+0.41, while YES
+    buys at <0.20 have avg pnl ~-0.016. The (0.20, 0.42] range represents genuinely
+    uncertain markets where the price is most likely to be mispriced. We allocate
+    double size there. For the <0.20 range, the market is likely correctly pricing
+    a near-zero resolution probability, so we use reduced size.
+    Also adds trend filter: skip YES buy if all recent moves are strictly down.
+    """
+    name: str = "confidence_scaled"
+    buy_yes_below: float = 0.42
+    buy_yes_sweet_low: float = 0.20
+    buy_no_above: float = 0.58
+    lookback: int = 3
+    sweet_size: float = 2.0
+    base_size: float = 0.5
+
+    def __post_init__(self) -> None:
+        self._market_prices: dict[str, deque] = {}
+
+    def reset(self) -> None:
+        self._market_prices.clear()
+
+    def on_event(self, state: dict[str, Any]) -> Order | None:
+        mid = state["market_id"]
+        p = float(state["yes_price"])
+
+        if mid not in self._market_prices:
+            self._market_prices[mid] = deque(maxlen=self.lookback + 1)
+        self._market_prices[mid].append(p)
+        hist = self._market_prices[mid]
+
+        if p <= self.buy_yes_below:
+            # Skip if all recent moves are strictly falling (informed selling)
+            if len(hist) >= 2:
+                all_falling = all(hist[i] > hist[i + 1] for i in range(len(hist) - 1))
+                if all_falling:
+                    return None
+            # Use sweet-spot size when in the profitable band, reduced size otherwise
+            size = self.sweet_size if p >= self.buy_yes_sweet_low else self.base_size
+            return Order(market_id=state["market_id"], side="yes", contracts=size, reason=self.name)
+
+        if p >= self.buy_no_above:
+            return Order(market_id=state["market_id"], side="no", contracts=1.0, reason=self.name)
+
+        return None
+
+
 def default_strategy_registry() -> list[Strategy]:
     return [
         ThresholdEdgeStrategy(),
         MeanReversionStrategy(),
         OnlineLogisticLikeStrategy(),
         TrendFilteredThresholdStrategy(),
+        ConfidenceScaledStrategy(),
     ]
 
