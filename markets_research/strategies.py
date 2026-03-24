@@ -168,7 +168,7 @@ class HighWaterMarkStrategy(Strategy):
     name: str = "high_water_mark"
     buy_yes_below: float = 0.42
     buy_no_above: float = 0.58
-    min_viable_price: float = 0.10
+    min_viable_price: float = 0.20
     order_size: float = 1.0
 
     def __post_init__(self) -> None:
