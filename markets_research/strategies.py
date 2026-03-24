@@ -196,6 +196,52 @@ class AboveMarkRecyclerStrategy(Strategy):
         return None
 
 
+@dataclass
+class SymmetricRecyclerStrategy(Strategy):
+    """Symmetric above/below-mark recycler for both YES and NO sides.
+
+    Mechanism: Settlement mark is at 0.5. Selling YES above 0.5 captures extra profit
+    vs holding. Selling NO below 0.5 (YES above 0.5) also captures extra profit vs holding.
+    Exits prevent position cap accumulation and free capital for re-entry.
+    Both YES and NO sides with exits should add profitable NO trades while avoiding
+    the adverse-fill NO losses that threshold_edge suffers (those happen when NO buys
+    execute at low-price events — exits prevent these positions from growing large).
+    """
+
+    name: str = "symmetric_recycler"
+    buy_yes_below: float = 0.38
+    sell_yes_above: float = 0.55
+    buy_no_above: float = 0.62
+    sell_no_below_yes: float = 0.45  # sell NO when YES drops to this (NO above mark)
+    order_size: float = 1.0
+
+    def reset(self) -> None:
+        return None
+
+    def on_event(self, state: dict[str, Any]) -> Order | None:
+        p = float(state["yes_price"])
+        pos_yes = float(state["position_yes_contracts"])
+        pos_no = float(state["position_no_contracts"])
+
+        # Exit YES when above mark
+        if pos_yes > 0 and p >= self.sell_yes_above:
+            return Order(market_id=state["market_id"], side="yes", contracts=-pos_yes, reason=self.name)
+
+        # Exit NO when YES drops (NO now above mark)
+        if pos_no > 0 and p <= self.sell_no_below_yes:
+            return Order(market_id=state["market_id"], side="no", contracts=-pos_no, reason=self.name)
+
+        # Buy YES cheap
+        if p <= self.buy_yes_below and pos_yes == 0:
+            return Order(market_id=state["market_id"], side="yes", contracts=self.order_size, reason=self.name)
+
+        # Buy NO expensive (YES high = NO cheap)
+        if p >= self.buy_no_above and pos_no == 0:
+            return Order(market_id=state["market_id"], side="no", contracts=self.order_size, reason=self.name)
+
+        return None
+
+
 def default_strategy_registry() -> list[Strategy]:
     return [
         ThresholdEdgeStrategy(),
@@ -203,5 +249,6 @@ def default_strategy_registry() -> list[Strategy]:
         OnlineLogisticLikeStrategy(),
         LargeTradeFollowerStrategy(),
         AboveMarkRecyclerStrategy(),
+        SymmetricRecyclerStrategy(),
     ]
 
