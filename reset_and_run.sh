@@ -58,7 +58,7 @@ You are starting a fresh autoresearch session for the autoresearch-markets proje
 Follow ALL instructions in program.md exactly. Here is a summary of what you must do:
 
 1. Read program.md, README.md, prepare.py, train.py, and markets_research/strategies.py for full context.
-2. Generate a fresh run tag (today's date + 4-char hex suffix, e.g. mar24-a3f1).
+2. Generate a fresh run tag (todays date + 4-char hex suffix, e.g. mar24-a3f1).
    Use: python3 -c "import secrets; print(secrets.token_hex(2))"
 3. Create and checkout a new branch: git checkout -b autoresearch/<tag>
 4. Verify data_lake/ exists and has parquet files. If missing, stop and tell the user.
