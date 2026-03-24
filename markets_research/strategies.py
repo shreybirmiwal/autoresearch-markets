@@ -297,6 +297,42 @@ class MultiTimeframeMeanReversionStrategy(Strategy):
         return None
 
 
+@dataclass
+class OrderFlowImbalanceStrategy(Strategy):
+    """Order flow imbalance proxy using trade size.
+    Large size at low prices signals panic selling -> buy YES (mean reversion).
+    Large size at high prices signals FOMO buying -> buy NO (fade the move).
+    Small size at extremes is noise; large size has conviction."""
+    name: str = "order_flow_imbalance"
+    window: int = 20
+    size_percentile_threshold: float = 75.0  # top quartile of sizes
+    yes_max_price: float = 0.25
+    no_min_price: float = 0.75
+    order_size: float = 1.0
+
+    def __post_init__(self) -> None:
+        self._sizes: deque[float] = deque(maxlen=self.window)
+
+    def reset(self) -> None:
+        self._sizes.clear()
+
+    def on_event(self, state: dict[str, Any]) -> Order | None:
+        p = float(state["yes_price"])
+        sz = float(state["size"])
+        self._sizes.append(sz)
+        if len(self._sizes) < 5:
+            return None
+        sizes_arr = np.array(self._sizes, dtype=np.float64)
+        size_threshold = np.percentile(sizes_arr, self.size_percentile_threshold)
+        # Only trade on large-size events (high conviction signals)
+        if sz >= size_threshold:
+            if p <= self.yes_max_price:
+                return Order(market_id=state["market_id"], side="yes", contracts=self.order_size, reason=self.name)
+            if p >= self.no_min_price:
+                return Order(market_id=state["market_id"], side="no", contracts=self.order_size, reason=self.name)
+        return None
+
+
 def default_strategy_registry() -> list[Strategy]:
     return [
         ThresholdEdgeStrategy(),
@@ -307,5 +343,6 @@ def default_strategy_registry() -> list[Strategy]:
         RSIStrategy(),
         MomentumReverseStrategy(),
         MultiTimeframeMeanReversionStrategy(),
+        OrderFlowImbalanceStrategy(),
     ]
 
