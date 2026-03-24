@@ -154,59 +154,30 @@ class TrendFilteredThresholdStrategy(Strategy):
 
 
 @dataclass
-class CapitalRecycleStrategy(Strategy):
-    """Recycle cap-saturated cheap positions when price enters the profitable sweet spot.
+class WiderYesThresholdStrategy(Strategy):
+    """Buy YES up to 0.50 -- exploiting YES-bias across the mid-range.
 
-    Mechanism: Markets often start with many <0.20 YES events that fill our 500-contract
-    cap. When price rises to (0.20, 0.42] sweet spot (avg pnl +0.41), we're capped and
-    miss these high-edge trades. Recycling: once per sweet-spot entry, if near cap, sell
-    some old contracts (originally bought cheap at <0.20 with negative expected value
-    of -0.016) to make room for new sweet-spot buys at +0.41 expected. The sell itself
-    is profitable (realized gain vs negative expected holding value).
+    Mechanism: Data shows prediction markets in 0.20-0.42 range have YES
+    resolution rate ~71%, far above implied probability. The (0.40, 0.42]
+    range still has 65% YES rate (avg +0.244 pnl). If this bias extends to
+    0.42-0.50 (Polymarket systematically underestimates YES probability in
+    the mid-range), expanding the YES threshold to 0.50 adds profitable
+    trades. Raise NO threshold to 0.65 to avoid known-bad mid-range NO trades.
     """
-    name: str = "capital_recycle"
-    buy_yes_below: float = 0.42
-    sweet_low: float = 0.20
-    buy_no_above: float = 0.58
-    recycle_threshold: float = 380.0
-    sell_down_to: float = 200.0
+    name: str = "wider_yes_threshold"
+    buy_yes_below: float = 0.50
+    buy_no_above: float = 0.65
     order_size: float = 1.0
 
-    def __post_init__(self) -> None:
-        self._recycled: dict[str, bool] = {}
-        self._in_sweet: dict[str, bool] = {}
-
     def reset(self) -> None:
-        self._recycled.clear()
-        self._in_sweet.clear()
+        return None
 
     def on_event(self, state: dict[str, Any]) -> Order | None:
         p = float(state["yes_price"])
-        pos = float(state["position_yes_contracts"])
-        mid = state["market_id"]
-
-        in_sweet = self.sweet_low <= p <= self.buy_yes_below
-        was_in_sweet = self._in_sweet.get(mid, False)
-
-        # Reset recycle flag when re-entering sweet spot from below
-        if in_sweet and not was_in_sweet:
-            self._recycled[mid] = False
-        self._in_sweet[mid] = in_sweet
-
-        # Recycle: once per sweet-spot entry, sell near-cap cheap contracts
-        if in_sweet and pos >= self.recycle_threshold and not self._recycled.get(mid, False):
-            self._recycled[mid] = True
-            sell_qty = pos - self.sell_down_to
-            return Order(market_id=mid, side="yes", contracts=-sell_qty, reason=self.name)
-
-        # Entry: buy YES in sweet spot or cheap zone
         if p <= self.buy_yes_below:
-            return Order(market_id=mid, side="yes", contracts=self.order_size, reason=self.name)
-
-        # Entry: buy NO when price is high
+            return Order(market_id=state["market_id"], side="yes", contracts=self.order_size, reason=self.name)
         if p >= self.buy_no_above:
-            return Order(market_id=mid, side="no", contracts=self.order_size, reason=self.name)
-
+            return Order(market_id=state["market_id"], side="no", contracts=self.order_size, reason=self.name)
         return None
 
 
@@ -216,6 +187,6 @@ def default_strategy_registry() -> list[Strategy]:
         MeanReversionStrategy(),
         OnlineLogisticLikeStrategy(),
         TrendFilteredThresholdStrategy(),
-        CapitalRecycleStrategy(),
+        WiderYesThresholdStrategy(),
     ]
 
