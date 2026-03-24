@@ -331,6 +331,53 @@ class ConfirmationDriftYesStrategy(Strategy):
         return None
 
 
+@dataclass
+class VolatileNoFadeStrategy(Strategy):
+    """Buy NO when YES is overextended AND the market has been volatile (high rolling std).
+    Mechanism: Volatile markets at high YES prices are more likely to overshoot consensus.
+    Disagreement (high std) + overextended price = likely reversal candidate.
+    Exit NO when YES falls to 0.50 (capital recycling). No existing strategy exits NO positions.
+    """
+    name: str = "volatile_no_fade"
+    window: int = 20
+    min_std: float = 0.03
+    buy_no_above: float = 0.72
+    exit_no_below: float = 0.50
+    order_size: float = 1.0
+
+    def __post_init__(self) -> None:
+        self._market_history: dict[str, deque] = {}
+
+    def reset(self) -> None:
+        self._market_history.clear()
+
+    def on_event(self, state: dict[str, Any]) -> Order | None:
+        mid = state["market_id"]
+        p = float(state["yes_price"])
+        pos_no = float(state.get("position_no_contracts", 0.0))
+
+        if mid not in self._market_history:
+            self._market_history[mid] = deque(maxlen=self.window)
+        hist = self._market_history[mid]
+        hist.append(p)
+
+        # Exit NO: take profit when price has reverted
+        if pos_no > 0 and p <= self.exit_no_below:
+            return Order(market_id=mid, side="no", contracts=-pos_no, reason=self.name + "_exit")
+
+        if len(hist) < self.window:
+            return None
+
+        arr = np.array(hist, dtype=np.float64)
+        std = arr.std()
+
+        # Buy NO: overextended + volatile market
+        if p > self.buy_no_above and std >= self.min_std:
+            return Order(market_id=mid, side="no", contracts=self.order_size, reason=self.name)
+
+        return None
+
+
 def default_strategy_registry() -> list[Strategy]:
     return [
         ThresholdEdgeStrategy(),
@@ -340,5 +387,6 @@ def default_strategy_registry() -> list[Strategy]:
         LocalMinBoostYesStrategy(),
         ExitAwareBandedStrategy(),
         ConfirmationDriftYesStrategy(),
+        VolatileNoFadeStrategy(),
     ]
 
