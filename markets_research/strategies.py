@@ -30,7 +30,7 @@ class ThresholdEdgeStrategy(Strategy):
     trade count (Sharpe) and total contracts (PnL).
     """
     name: str = "threshold_edge"
-    buy_yes_below: float = 0.45
+    buy_yes_below: float = 0.47
     order_size: float = 0.65
     position_cap: float = 500.0
 
