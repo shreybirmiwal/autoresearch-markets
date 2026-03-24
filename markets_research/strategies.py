@@ -32,10 +32,13 @@ class HybridEdgeStrategy(Strategy):
     Mechanism:
       1. Base: always buy YES ≤ 0.45.
       2. Extended (0.45-0.60): buy when continuation (not market switch) AND
-         (good hours UTC 3-11 OR ≥40% of last 5 events were cheap).
+         (good hours UTC 3-11 OR ≥40% of last 5 events were cheap
+          OR run_length ≥ 6 consecutive events from same market).
       3. Market-switch gate: skip extended at first event from any market (run_pos=1).
          Empirical: market-switch extended events have 11% cheap execution → unprofitable.
          Continuation events (run_pos≥2) have 48% cheap execution — very good.
+      4. Long-run bonus: in a burst of ≥6 consecutive events from same market, the market
+         is in a "hot activity" phase with higher-than-average continuation probability.
     fit() uses n*2//3 window to estimate adaptive order sizes per market.
     """
     name: str = "hybrid_edge"
@@ -45,6 +48,7 @@ class HybridEdgeStrategy(Strategy):
     good_hour_end: int = 11
     rolling_window: int = 5
     cheap_fraction_min: float = 0.40
+    long_run_min: int = 6
     order_size: float = 0.65
     position_cap: float = 500.0
 
@@ -52,7 +56,7 @@ class HybridEdgeStrategy(Strategy):
         self._market_sizes: dict[str, float] = {}
         self._recent_prices: deque = deque(maxlen=self.rolling_window)
         self._prev_market_id: Any = None
-        self._market_last_price: dict[str, float] = {}
+        self._run_length: int = 0
         return None
 
     def _hour_of(self, ts: Any) -> int | None:
@@ -79,10 +83,8 @@ class HybridEdgeStrategy(Strategy):
                 return False  # market-switch gate
             if self._cheap_conditions(ts):
                 return True
-            # Declining price within this market run: next event likely also cheap
-            mid = str(market_id)
-            prev_p = self._market_last_price.get(mid)
-            if prev_p is not None and price < prev_p:
+            # Long-run bonus: market is in a hot activity burst → higher continuation prob
+            if self._run_length >= self.long_run_min:
                 return True
         return False
 
@@ -90,13 +92,17 @@ class HybridEdgeStrategy(Strategy):
         n = len(train_events)
         window = train_events[n * 2 // 3:]
         recent: deque = deque(maxlen=self.rolling_window)
-        market_last: dict[str, float] = {}
         prev_mid: Any = None
+        run_len: int = 0
         counts: dict[str, int] = defaultdict(int)
         for event in window:
             p = float(event["price_yes"])
             ts = event.get("event_ts")
             mid = str(event["market_id"])
+            if mid == prev_mid:
+                run_len += 1
+            else:
+                run_len = 1
             qualifies = False
             if p <= self.base_threshold:
                 qualifies = True
@@ -108,12 +114,11 @@ class HybridEdgeStrategy(Strategy):
                     cheap_frac = sum(1 for rp in recent if rp <= self.base_threshold) / self.rolling_window
                     if cheap_frac >= self.cheap_fraction_min:
                         qualifies = True
-                elif mid in market_last and p < market_last[mid]:
+                elif run_len >= self.long_run_min:
                     qualifies = True
             if qualifies:
                 counts[mid] += 1
             recent.append(p)
-            market_last[mid] = p
             prev_mid = mid
 
         self._market_sizes = {}
@@ -125,9 +130,12 @@ class HybridEdgeStrategy(Strategy):
     def on_event(self, state: dict[str, Any]) -> Order | None:
         p = float(state["yes_price"])
         market_id = state["market_id"]
+        if market_id == self._prev_market_id:
+            self._run_length += 1
+        else:
+            self._run_length = 1
         qualifies = self._qualifies(p, state.get("event_ts"), market_id)
         self._recent_prices.append(p)
-        self._market_last_price[str(market_id)] = p
         self._prev_market_id = market_id
         if qualifies:
             mid = str(market_id)
