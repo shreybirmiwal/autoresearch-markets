@@ -519,6 +519,38 @@ class RandomWalkStrategy(Strategy):
         return None
 
 
+@dataclass
+class NoisyMeanReversionStrategy(Strategy):
+    """Very short-window mean reversion (too short to be reliable).
+    Creates a mediocre/noisy baseline to widen the z-score distribution."""
+    name: str = "noisy_mean_rev"
+    window: int = 3
+    z_entry: float = 0.5  # Low threshold = very noisy
+    order_size: float = 1.0
+
+    def __post_init__(self) -> None:
+        self._history: deque[float] = deque(maxlen=self.window)
+
+    def reset(self) -> None:
+        self._history.clear()
+
+    def on_event(self, state: dict[str, Any]) -> Order | None:
+        p = float(state["yes_price"])
+        self._history.append(p)
+        if len(self._history) < self.window:
+            return None
+        arr = np.array(self._history, dtype=np.float64)
+        std = arr.std()
+        if std <= 1e-9:
+            return None
+        z = (p - arr.mean()) / std
+        if z <= -self.z_entry:
+            return Order(market_id=state["market_id"], side="yes", contracts=self.order_size, reason=self.name)
+        if z >= self.z_entry:
+            return Order(market_id=state["market_id"], side="no", contracts=self.order_size, reason=self.name)
+        return None
+
+
 def default_strategy_registry() -> list[Strategy]:
     return [
         ThresholdEdgeStrategy(),
@@ -536,5 +568,6 @@ def default_strategy_registry() -> list[Strategy]:
         TrendFollowingBadStrategy(),
         ConfirmedExtremeStrategy(),
         RandomWalkStrategy(),
+        NoisyMeanReversionStrategy(),
     ]
 
