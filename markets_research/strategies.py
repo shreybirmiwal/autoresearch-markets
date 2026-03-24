@@ -154,65 +154,53 @@ class TrendFilteredThresholdStrategy(Strategy):
 
 
 @dataclass
-class OptimalSizedThresholdStrategy(Strategy):
-    """Use fit() to compute per-market cheap-phase sizes that preserve cap room.
+class FirstPriceQualityStrategy(Strategy):
+    """Scale position size based on first-seen price as market quality signal.
 
-    Mechanism: Markets with many cheap (<0.20) events exhaust the 500-contract
-    position cap before the profitable sweet-spot (0.20-0.42) events occur.
-    By learning (in fit) how many cheap vs sweet events each market has, we
-    set a reduced cheap-phase order size so the cap isn't exhausted before
-    sweet spot events. Sweet spot trades always use full 1.0x size to maximize
-    high-edge capital deployment.
+    Mechanism: If the first price we observe for a market is in the sweet spot
+    (0.20-0.42), the market is genuinely uncertain and likely YES-biased (strong
+    edge). Use double size. If first price is <0.20, the market is likely correctly
+    priced cheap (little edge). Use half size. This concentrates capital on the
+    highest-quality entry points while still participating in cheap markets.
+    Also applies a mild trend filter (same as TrendFiltered).
     """
-    name: str = "optimal_sized_threshold"
+    name: str = "first_price_quality"
     buy_yes_below: float = 0.42
-    sweet_low: float = 0.20
     buy_no_above: float = 0.58
-    position_cap: float = 500.0
-    sweet_reserve: float = 80.0  # contracts to reserve for sweet spot
-    max_cheap_size: float = 1.0
-    min_cheap_size: float = 0.1
+    sweet_low: float = 0.20
+    sweet_size: float = 2.0
+    cheap_size: float = 0.5
+    lookback: int = 3
 
     def __post_init__(self) -> None:
-        self._cheap_sizes: dict[str, float] = {}
+        self._first_price: dict[str, float] = {}
+        self._market_prices: dict[str, deque] = {}
 
     def reset(self) -> None:
-        self._cheap_sizes.clear()
-
-    def fit(self, train_events: list[dict[str, Any]]) -> None:
-        market_cheap: dict[str, int] = {}
-        market_sweet: dict[str, int] = {}
-        for event in train_events:
-            mid = str(event["market_id"])
-            p = float(event.get("yes_price", event.get("price_yes", 0.5)))
-            if p < self.sweet_low:
-                market_cheap[mid] = market_cheap.get(mid, 0) + 1
-            elif p <= self.buy_yes_below:
-                market_sweet[mid] = market_sweet.get(mid, 0) + 1
-
-        self._cheap_sizes.clear()
-        all_markets = set(market_cheap) | set(market_sweet)
-        for mid in all_markets:
-            n_cheap = market_cheap.get(mid, 0)
-            n_sweet = market_sweet.get(mid, 0)
-            if n_cheap == 0:
-                self._cheap_sizes[mid] = self.max_cheap_size
-            else:
-                # Leave room for n_sweet sweet-spot contracts (capped at sweet_reserve)
-                reserve = min(n_sweet, self.sweet_reserve)
-                budget = max(1.0, self.position_cap - reserve)
-                cheap_size = min(self.max_cheap_size, budget / n_cheap)
-                self._cheap_sizes[mid] = max(self.min_cheap_size, cheap_size)
+        self._first_price.clear()
+        self._market_prices.clear()
 
     def on_event(self, state: dict[str, Any]) -> Order | None:
         mid = state["market_id"]
         p = float(state["yes_price"])
 
+        if mid not in self._first_price:
+            self._first_price[mid] = p
+            self._market_prices[mid] = deque(maxlen=self.lookback + 1)
+        self._market_prices[mid].append(p)
+        hist = self._market_prices[mid]
+
         if p <= self.buy_yes_below:
-            if p < self.sweet_low:
-                size = self._cheap_sizes.get(str(mid), self.max_cheap_size)
+            # Skip if all recent moves are strictly downward
+            if len(hist) >= 2:
+                all_falling = all(hist[i] > hist[i + 1] for i in range(len(hist) - 1))
+                if all_falling:
+                    return None
+            first_p = self._first_price[mid]
+            if first_p >= self.sweet_low:
+                size = self.sweet_size
             else:
-                size = 1.0  # full size for sweet spot
+                size = self.cheap_size
             return Order(market_id=mid, side="yes", contracts=size, reason=self.name)
 
         if p >= self.buy_no_above:
@@ -227,6 +215,6 @@ def default_strategy_registry() -> list[Strategy]:
         MeanReversionStrategy(),
         OnlineLogisticLikeStrategy(),
         TrendFilteredThresholdStrategy(),
-        OptimalSizedThresholdStrategy(),
+        FirstPriceQualityStrategy(),
     ]
 
