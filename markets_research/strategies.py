@@ -224,6 +224,40 @@ class RSIStrategy(Strategy):
         return None
 
 
+@dataclass
+class MomentumReverseStrategy(Strategy):
+    """Contrarian momentum: when price has fallen sharply and is low, buy YES (bounce).
+    When price has risen sharply and is high, buy NO (mean reversion).
+    Focuses on the extreme buckets with proven positive PnL."""
+    name: str = "momentum_reverse"
+    window: int = 5
+    momentum_threshold: float = 0.04
+    yes_max_price: float = 0.30
+    no_min_price: float = 0.65
+    order_size: float = 1.0
+
+    def __post_init__(self) -> None:
+        self._prices: deque[float] = deque(maxlen=self.window)
+
+    def reset(self) -> None:
+        self._prices.clear()
+
+    def on_event(self, state: dict[str, Any]) -> Order | None:
+        p = float(state["yes_price"])
+        self._prices.append(p)
+        if len(self._prices) < self.window:
+            return None
+        prices = list(self._prices)
+        momentum = prices[-1] - prices[0]  # net change over window
+        # Price has fallen significantly and is now low -> bounce expected, buy YES
+        if momentum < -self.momentum_threshold and p <= self.yes_max_price:
+            return Order(market_id=state["market_id"], side="yes", contracts=self.order_size, reason=self.name)
+        # Price has risen significantly and is now high -> fade expected, buy NO
+        if momentum > self.momentum_threshold and p >= self.no_min_price:
+            return Order(market_id=state["market_id"], side="no", contracts=self.order_size, reason=self.name)
+        return None
+
+
 def default_strategy_registry() -> list[Strategy]:
     return [
         ThresholdEdgeStrategy(),
@@ -232,5 +266,6 @@ def default_strategy_registry() -> list[Strategy]:
         ContraryExtremesStrategy(),
         EMACrossoverStrategy(),
         RSIStrategy(),
+        MomentumReverseStrategy(),
     ]
 
