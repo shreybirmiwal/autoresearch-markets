@@ -15,6 +15,12 @@ class BacktestConfig:
     slippage_bps: float = 5.0
     latency_events: int = 1
 
+    def __post_init__(self) -> None:
+        # Enforce minimum latency of 1 to prevent look-ahead bias.
+        # An order triggered by event i must execute on event i+1 at earliest.
+        if self.latency_events < 1:
+            raise ValueError(f"latency_events must be >= 1 (got {self.latency_events})")
+
 
 @dataclass(frozen=True)
 class Order:
@@ -37,6 +43,18 @@ def run_backtest(
     if trades_df.empty:
         return pd.DataFrame(), pd.DataFrame()
     df = trades_df.sort_values("event_ts").reset_index(drop=True).copy()
+
+    # Build a randomised opaque ID mapping so strategies cannot look up settlement
+    # prices by recognising real market_id strings or tickers.
+    # The mapping is reshuffled on every backtest call, so hardcoding IDs across
+    # runs provides no benefit.
+    real_ids: list[str] = [str(m) for m in df["market_id"].unique()]
+    rng = np.random.default_rng()
+    shuffled = real_ids.copy()
+    rng.shuffle(shuffled)
+    opaque_map: dict[str, str] = {real: f"mkt_{i}" for i, real in enumerate(shuffled)}
+    real_map: dict[str, str] = {v: k for k, v in opaque_map.items()}
+
     holdings_yes: dict[str, float] = {}
     holdings_no: dict[str, float] = {}
     cash = cfg.initial_cash
@@ -46,19 +64,22 @@ def run_backtest(
     last_known_price: dict[str, float] = {}
 
     for i, row in df.iterrows():
+        real_mid = str(row["market_id"])
         # Update last known price for the current row's market before executing orders
-        last_known_price[str(row["market_id"])] = float(row["price_yes"])
+        last_known_price[real_mid] = float(row["price_yes"])
         to_execute = [entry for entry in pending_orders if entry[0] <= i]
         pending_orders = [entry for entry in pending_orders if entry[0] > i]
         for _, order in to_execute:
+            # Translate opaque ID back to real market ID for internal accounting.
+            real_order_mid = real_map.get(order.market_id, order.market_id)
             # Use the last known price for the order's market, not the current row's market.
             # Without this, orders execute at whatever market happens to be next in the global
             # sequence — cross-market price contamination that produces fictitious fill prices.
-            mid = last_known_price.get(str(order.market_id), float(row["price_yes"]))
+            mid = last_known_price.get(real_order_mid, float(row["price_yes"]))
             if order.side == "yes":
-                current = holdings_yes.get(order.market_id, 0.0)
+                current = holdings_yes.get(real_order_mid, 0.0)
             else:
-                current = holdings_no.get(order.market_id, 0.0)
+                current = holdings_no.get(real_order_mid, 0.0)
             new_pos = float(np.clip(current + order.contracts, 0.0, cfg.max_position_contracts))
             executed_contracts = float(new_pos - current)
             if executed_contracts == 0:
@@ -80,14 +101,13 @@ def run_backtest(
             else:
                 cash += notional - fee
             if order.side == "yes":
-                holdings_yes[order.market_id] = new_pos
+                holdings_yes[real_order_mid] = new_pos
             else:
-                holdings_no[order.market_id] = new_pos
+                holdings_no[real_order_mid] = new_pos
             fills.append(
                 {
                     "event_ts": row["event_ts"],
-                    "market_id": order.market_id,
-                    "ticker": row["ticker"],
+                    "market_id": real_order_mid,
                     "side": order.side,
                     # Positive = open/buy, negative = close/sell
                     "contracts": float(executed_contracts),
@@ -97,18 +117,22 @@ def run_backtest(
                 }
             )
 
+        # Expose only opaque market_id; strip ticker entirely.
+        # This prevents strategies from building settlement-price lookup tables
+        # keyed on human-readable identifiers.
+        opaque_mid = opaque_map[real_mid]
         state = {
             "event_ts": row["event_ts"],
-            "market_id": row["market_id"],
-            "ticker": row["ticker"],
+            "market_id": opaque_mid,
             "yes_price": float(row["price_yes"]),
             "size": float(row["size"]),
-            "position_yes_contracts": holdings_yes.get(str(row["market_id"]), 0.0),
-            "position_no_contracts": holdings_no.get(str(row["market_id"]), 0.0),
+            "position_yes_contracts": holdings_yes.get(real_mid, 0.0),
+            "position_no_contracts": holdings_no.get(real_mid, 0.0),
         }
         order = strategy.on_event(state)
         if order is not None:
-            execute_idx = i + max(0, int(cfg.latency_events))
+            # Latency is enforced to be >= 1 by BacktestConfig.__post_init__.
+            execute_idx = i + int(cfg.latency_events)
             pending_orders.append((execute_idx, order))
 
         mtm = cash

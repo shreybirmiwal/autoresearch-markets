@@ -47,8 +47,11 @@ def rank_experiments(metrics_df: pd.DataFrame) -> pd.DataFrame:
     if metrics_df.empty:
         return metrics_df
     df = metrics_df.copy()
+    # Raised from 10 → 100: a strategy with only 10 cherry-picked trades can produce
+    # near-infinite Sharpe by having near-zero return variance. 100 trades forces the
+    # strategy to generalise across a realistic number of events.
     if "num_trades" in df.columns:
-        df = df[df["num_trades"] >= 10].copy()
+        df = df[df["num_trades"] >= 100].copy()
     if "max_drawdown" in df.columns:
         df = df[df["max_drawdown"] >= -0.5].copy()
     if df.empty:
@@ -59,11 +62,15 @@ def rank_experiments(metrics_df: pd.DataFrame) -> pd.DataFrame:
     #   sharpe / 20      — sharpe of 20 is excellent; scales to [0, 1] for typical range
     #   final_pnl / 5000 — $5k profit on $10k starting capital is a strong result
     #   1 + max_drawdown — drawdown is ≤ 0, so this maps it to [0, 1]
+    # Components are capped at 1.5× the reference value so that extreme overfitting
+    # (e.g. a lookup-table strategy with Sharpe=500) does not produce a runaway score
+    # that is indistinguishable from genuine generalisation.
     _SHARPE_REF = 20.0
     _PNL_REF = 5_000.0
+    _CAP = 1.5
     df["score"] = (
-        0.45 * df["sharpe"] / _SHARPE_REF
-        + 0.45 * df["final_pnl"] / _PNL_REF
+        0.45 * df["sharpe"].clip(upper=_SHARPE_REF * _CAP) / _SHARPE_REF
+        + 0.45 * df["final_pnl"].clip(upper=_PNL_REF * _CAP) / _PNL_REF
         + 0.10 * (1.0 + df["max_drawdown"])
     )
     return df.sort_values("score", ascending=False).reset_index(drop=True)

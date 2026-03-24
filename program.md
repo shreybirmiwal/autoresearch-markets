@@ -28,7 +28,7 @@ To set up a new experiment, work with the user to:
 score = 0.45 * (sharpe / 20) + 0.45 * (final_pnl / 5000) + 0.10 * (1 + max_drawdown)
 ```
 
-Higher is better. Strategies with fewer than 10 trades or worse than -50% drawdown are filtered out.
+Higher is better. Strategies with fewer than 100 trades or worse than -50% drawdown are filtered out. Score components are capped at 1.5× the reference value to discourage overfitting.
 
 This is an **absolute** score — each strategy is scored against fixed reference values, not relative to other strategies in the registry. This means you **cannot improve the score by adding deliberately bad "baseline widener" strategies**. The only way to improve is to add a strategy that genuinely performs better.
 
@@ -46,6 +46,14 @@ This is an **absolute** score — each strategy is scored against fixed referenc
 - Modify `prepare.py`, `train.py`, or anything under `markets_research/` except `strategies.py`.
 - Install new packages or add dependencies beyond what's already in `pyproject.toml`.
 - Modify the scoring or evaluation logic.
+
+**Anti-cheat rules (reward-hacking is explicitly prohibited):**
+- **No file I/O inside strategies.** Strategy classes must not call `open()`, `pd.read_parquet()`, `pd.read_csv()`, or any other disk read. Strategies receive only the `state` dict passed to `on_event()` and the `train_events` list passed to `fit()`.
+- **No network calls inside strategies.** No `requests`, `urllib`, `httpx`, `socket`, or similar.
+- **No subprocess or exec.** No `os.system()`, `subprocess`, `eval()`, `exec()`, or dynamic code execution.
+- **No hardcoded market outcomes.** The `market_id` field in `state` is an opaque, per-run randomised identifier (e.g. `"mkt_3"`). It is reshuffled on every backtest call. Never hardcode mappings from market IDs to expected settlement prices.
+- **No ticker-based lookup tables.** `ticker` is no longer exposed in `state`. Do not attempt to infer it from other fields.
+- The only acceptable information source for a strategy is the `state` dict it receives per event: `event_ts`, `market_id` (opaque), `yes_price`, `size`, `position_yes_contracts`, `position_no_contracts`.
 
 **Anti-patterns to avoid:**
 - **Baseline wideners**: adding strategies with deliberately poor performance to manipulate a relative score metric. The score is now absolute — this does nothing.

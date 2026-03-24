@@ -4,6 +4,7 @@ import argparse
 import json
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from markets_research.attribution import build_trade_attribution, propose_next_hypotheses, summarize_win_loss_contexts
@@ -40,10 +41,14 @@ def _walk_forward_splits(df: pd.DataFrame, folds: int = 3) -> list[tuple[pd.Data
     df = df.sort_values("event_ts").reset_index(drop=True)
     n = len(df)
     chunk = max(1, n // (folds + 1))
+    # Apply a small random jitter (up to ±2% of chunk size) to fold boundaries so that
+    # a strategy cannot hardcode exact event_ts ranges derived from a known fixed split.
+    rng = np.random.default_rng()
     splits: list[tuple[pd.DataFrame, pd.DataFrame]] = []
     for i in range(1, folds + 1):
-        train_end = i * chunk
-        test_end = min(n, (i + 1) * chunk)
+        jitter = int(rng.integers(-max(1, chunk // 50), max(1, chunk // 50) + 1))
+        train_end = min(n - 1, max(1, i * chunk + jitter))
+        test_end = min(n, (i + 1) * chunk + jitter)
         if test_end <= train_end:
             continue
         splits.append((df.iloc[:train_end].copy(), df.iloc[train_end:test_end].copy()))
@@ -98,13 +103,19 @@ def run_tournament(
     trades, markets = _filter_market_universe(trades, markets, market_category, top_n_markets)
     if trades.empty or markets.empty:
         raise ValueError("No markets/trades left after universe filtering. Adjust --market-category/--top-n-markets.")
-    settlement = (
+    settlement_raw = (
         markets.sort_values("snapshot_id")
         .groupby("market_id", as_index=False)["settlement_price_yes"]
         .last()
         .set_index("market_id")["settlement_price_yes"]
-        .fillna(0.5)
     )
+    # Drop markets with no known settlement price instead of imputing 0.5.
+    # Imputing 0.5 made every YES buy below 0.5 appear profitable on unknown markets,
+    # creating a spurious edge that doesn't exist in live trading.
+    settlement = settlement_raw.dropna()
+    settled_ids = set(settlement.index.astype(str))
+    trades = trades[trades["market_id"].astype(str).isin(settled_ids)].copy()
+    markets = markets[markets["market_id"].astype(str).isin(settled_ids)].copy()
 
     rows: list[dict[str, float | str]] = []
     attribution_outputs: list[pd.DataFrame] = []
