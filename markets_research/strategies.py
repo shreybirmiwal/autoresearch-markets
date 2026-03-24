@@ -208,7 +208,6 @@ class LargeTradeFollowerStrategy(Strategy):
 def default_strategy_registry() -> list[Strategy]:
     return [
         ThresholdEdgeStrategy(),
-        MeanReversionStrategy(),
         OnlineLogisticLikeStrategy(),
         MidThresholdStrategy(),
         AsymmetricThreshold80Strategy(),
