@@ -105,10 +105,37 @@ class OnlineLogisticLikeStrategy(Strategy):
         return None
 
 
+@dataclass
+class PriceBandBuyYesStrategy(Strategy):
+    """Buy YES only in the (0.20, 0.42] price band where avg trade PnL is highest.
+    Exit (take profit) when price rises above 0.65, recycling capital.
+    Avoids the <0.20 zone where 22k+ trades yield near-zero avg PnL (noise kills sharpe).
+    """
+    name: str = "price_band_yes"
+    buy_yes_low: float = 0.20
+    buy_yes_high: float = 0.42
+    exit_yes_above: float = 0.65
+    order_size: float = 1.0
+
+    def reset(self) -> None:
+        return None
+
+    def on_event(self, state: dict[str, Any]) -> Order | None:
+        p = float(state["yes_price"])
+        pos = float(state.get("position_yes_contracts", 0.0))
+        # Exit YES position if price has risen (take profit)
+        if pos > 0 and p >= self.exit_yes_above:
+            return Order(market_id=state["market_id"], side="yes", contracts=-pos, reason=self.name + "_exit")
+        # Enter YES only in (0.20, 0.42] band
+        if self.buy_yes_low < p <= self.buy_yes_high:
+            return Order(market_id=state["market_id"], side="yes", contracts=self.order_size, reason=self.name)
+        return None
+
+
 def default_strategy_registry() -> list[Strategy]:
     return [
         ThresholdEdgeStrategy(),
         MeanReversionStrategy(),
-        OnlineLogisticLikeStrategy(),
+        PriceBandBuyYesStrategy(),
     ]
 
