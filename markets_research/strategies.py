@@ -166,66 +166,52 @@ class Yes36NO80Strategy(Strategy):
 
 
 @dataclass
-class StopLossThresholdStrategy(Strategy):
-    """YES<0.36, NO>0.80 with stop-loss: exit YES position if price drops below stop level."""
-    name: str = "stoploss_threshold"
+class ThresholdMeanReversionComboStrategy(Strategy):
+    """Combined: threshold + mean-reversion confirmation.
+    Buy YES only when BOTH price < threshold AND z-score indicates oversold."""
+    name: str = "threshold_mr_combo"
     buy_yes_below: float = 0.36
     buy_no_above: float = 0.80
-    stop_loss_drop: float = 0.10  # exit if price drops 10 percentage points below entry
+    window: int = 30
+    z_confirm: float = 0.5  # softer z-score requirement for confirmation
     order_size: float = 1.0
 
     def __post_init__(self) -> None:
-        self._yes_pos: dict[str, float] = {}
-        self._yes_entry_price: dict[str, float] = {}
-        self._no_pos: dict[str, float] = {}
-        self._no_entry_price: dict[str, float] = {}
+        self._history: deque[float] = deque(maxlen=self.window)
 
     def reset(self) -> None:
-        self._yes_pos.clear()
-        self._yes_entry_price.clear()
-        self._no_pos.clear()
-        self._no_entry_price.clear()
+        self._history.clear()
 
     def on_event(self, state: dict[str, Any]) -> Order | None:
         p = float(state["yes_price"])
-        mid = state["market_id"]
-        yes_pos = self._yes_pos.get(mid, 0.0)
-        no_pos = self._no_pos.get(mid, 0.0)
+        self._history.append(p)
 
-        # Stop-loss: exit YES if price dropped significantly below average entry
-        if yes_pos > 0:
-            avg_entry = self._yes_entry_price.get(mid, p)
-            if p < avg_entry - self.stop_loss_drop:
-                self._yes_pos[mid] = 0.0
-                self._yes_entry_price.pop(mid, None)
-                return Order(market_id=mid, side="yes", contracts=-yes_pos, reason=self.name)
+        if len(self._history) < self.window:
+            # Not enough history, use plain threshold
+            if p <= self.buy_yes_below:
+                return Order(market_id=state["market_id"], side="yes", contracts=self.order_size, reason=self.name)
+            if p >= self.buy_no_above:
+                return Order(market_id=state["market_id"], side="no", contracts=self.order_size, reason=self.name)
+            return None
 
-        # Stop-loss: exit NO if YES price jumped above entry
-        if no_pos > 0:
-            avg_entry = self._no_entry_price.get(mid, p)
-            if p > avg_entry + self.stop_loss_drop:
-                self._no_pos[mid] = 0.0
-                self._no_entry_price.pop(mid, None)
-                return Order(market_id=mid, side="no", contracts=-no_pos, reason=self.name)
+        arr = np.array(self._history, dtype=np.float64)
+        std = arr.std()
+        if std <= 1e-9:
+            # No variance - use plain threshold
+            if p <= self.buy_yes_below:
+                return Order(market_id=state["market_id"], side="yes", contracts=self.order_size, reason=self.name)
+            if p >= self.buy_no_above:
+                return Order(market_id=state["market_id"], side="no", contracts=self.order_size, reason=self.name)
+            return None
 
-        # Entry
-        if p <= self.buy_yes_below:
-            if yes_pos == 0.0:
-                self._yes_entry_price[mid] = p
-            else:
-                # Update average entry price
-                self._yes_entry_price[mid] = (self._yes_entry_price[mid] * yes_pos + p * self.order_size) / (yes_pos + self.order_size)
-            self._yes_pos[mid] = yes_pos + self.order_size
-            return Order(market_id=mid, side="yes", contracts=self.order_size, reason=self.name)
+        z = (p - arr.mean()) / std
 
-        if p >= self.buy_no_above:
-            if no_pos == 0.0:
-                self._no_entry_price[mid] = p
-            else:
-                self._no_entry_price[mid] = (self._no_entry_price[mid] * no_pos + p * self.order_size) / (no_pos + self.order_size)
-            self._no_pos[mid] = no_pos + self.order_size
-            return Order(market_id=mid, side="no", contracts=self.order_size, reason=self.name)
-
+        # YES: both threshold and z-score confirm oversold
+        if p <= self.buy_yes_below and z <= -self.z_confirm:
+            return Order(market_id=state["market_id"], side="yes", contracts=self.order_size, reason=self.name)
+        # NO: both threshold and z-score confirm overbought
+        if p >= self.buy_no_above and z >= self.z_confirm:
+            return Order(market_id=state["market_id"], side="no", contracts=self.order_size, reason=self.name)
         return None
 
 
@@ -237,5 +223,5 @@ def default_strategy_registry() -> list[Strategy]:
         MidThresholdStrategy(),
         AsymmetricThreshold80Strategy(),
         Yes36NO80Strategy(),
-        StopLossThresholdStrategy(),
+        ThresholdMeanReversionComboStrategy(),
     ]
