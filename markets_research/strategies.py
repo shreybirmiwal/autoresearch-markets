@@ -114,7 +114,7 @@ class PriceBandBuyYesStrategy(Strategy):
     name: str = "price_band_yes"
     buy_yes_low: float = 0.20
     buy_yes_high: float = 0.42
-    exit_yes_above: float = 0.65
+    exit_yes_above: float = 0.63
     order_size: float = 1.0
 
     def reset(self) -> None:
