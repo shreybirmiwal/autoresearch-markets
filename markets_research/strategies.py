@@ -154,41 +154,78 @@ class TrendFilteredThresholdStrategy(Strategy):
 
 
 @dataclass
-class OnlineSweetDetectStrategy(Strategy):
-    """Real-time sweet-zone crossing detection for market quality.
+class WhaleFollowStrategy(Strategy):
+    """Scale YES position based on large informed trade signal.
 
-    Mechanism: Once a market's price crosses 0.20 (enters sweet zone),
-    it has demonstrated YES momentum — likely heading toward 1.0 resolution.
-    Full-size YES buys. Markets that have NEVER crossed 0.20 are probably
-    correctly-priced NO markets — tiny size to minimize losses.
-    No fit() dependency: works online from first event.
+    Mechanism: Prediction market trade sizes range from retail (5-100) to whale
+    (100k+). Large trades (size > whale_multiplier * rolling_median) come from
+    sophisticated informed players who believe they have edge. After a large YES
+    buy (size >> median AND price moved up), the informed whale confirmed YES
+    thesis — boost YES size for next few events. After a large NO buy (price
+    dropped on large trade), fade YES buys.
     """
-    name: str = "online_sweet_detect"
+    name: str = "whale_follow"
     buy_yes_below: float = 0.42
     buy_no_above: float = 0.58
-    sweet_entry: float = 0.20
-    full_size: float = 1.0
-    pre_sweet_size: float = 0.05
+    whale_multiplier: float = 10.0
+    size_window: int = 20
+    boost_size: float = 2.0
+    fade_size: float = 0.3
+    base_size: float = 1.0
+    boost_duration: int = 3
 
     def __post_init__(self) -> None:
-        self._ever_sweet: set = set()
+        self._prev_price: dict[str, float] = {}
+        self._sizes: dict[str, deque] = {}
+        self._boost: dict[str, int] = {}  # positive=boost, negative=fade
 
     def reset(self) -> None:
-        self._ever_sweet.clear()
+        self._prev_price.clear()
+        self._sizes.clear()
+        self._boost.clear()
 
     def on_event(self, state: dict[str, Any]) -> Order | None:
         mid = state["market_id"]
         p = float(state["yes_price"])
+        sz = float(state["size"])
 
-        if p >= self.sweet_entry:
-            self._ever_sweet.add(mid)
+        if mid not in self._sizes:
+            self._sizes[mid] = deque(maxlen=self.size_window)
+            self._boost[mid] = 0
+
+        # Track size history
+        self._sizes[mid].append(sz)
+
+        # Detect whale trade
+        if len(self._sizes[mid]) >= 5:
+            median_sz = float(np.median(list(self._sizes[mid])))
+            if median_sz > 0 and sz >= self.whale_multiplier * median_sz:
+                prev_p = self._prev_price.get(mid, p)
+                if p > prev_p:  # price moved up = YES buyer
+                    self._boost[mid] = self.boost_duration
+                elif p < prev_p:  # price moved down = NO buyer
+                    self._boost[mid] = -self.boost_duration
+
+        self._prev_price[mid] = p
+
+        # Decay boost
+        if self._boost.get(mid, 0) > 0:
+            self._boost[mid] -= 1
+        elif self._boost.get(mid, 0) < 0:
+            self._boost[mid] += 1
 
         if p <= self.buy_yes_below:
-            size = self.full_size if mid in self._ever_sweet else self.pre_sweet_size
+            boost_val = self._boost.get(mid, 0)
+            if boost_val > 0:
+                size = self.boost_size
+            elif boost_val < 0:
+                size = self.fade_size
+            else:
+                size = self.base_size
             return Order(market_id=mid, side="yes", contracts=size, reason=self.name)
 
         if p >= self.buy_no_above:
-            return Order(market_id=mid, side="no", contracts=1.0, reason=self.name)
+            return Order(market_id=mid, side="no", contracts=self.base_size, reason=self.name)
 
         return None
 
@@ -199,6 +236,6 @@ def default_strategy_registry() -> list[Strategy]:
         MeanReversionStrategy(),
         OnlineLogisticLikeStrategy(),
         TrendFilteredThresholdStrategy(),
-        OnlineSweetDetectStrategy(),
+        WhaleFollowStrategy(),
     ]
 
