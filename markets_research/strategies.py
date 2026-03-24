@@ -106,46 +106,22 @@ class OnlineLogisticLikeStrategy(Strategy):
 
 
 @dataclass
-class CapRecycleThresholdStrategy(Strategy):
-    """ThresholdEdge with capital recycling: exit YES when price recovers to 0.80+
-    to free position cap for re-entry at lower prices."""
-    name: str = "cap_recycle_threshold"
-    buy_yes_below: float = 0.42
-    buy_no_above: float = 0.58
-    exit_yes_at: float = 0.80
-    exit_no_at: float = 0.20
+class TightThresholdStrategy(Strategy):
+    """Tighter threshold focusing on deep-value YES trades only (< 0.30)."""
+    name: str = "tight_threshold"
+    buy_yes_below: float = 0.30
+    buy_no_above: float = 0.70
     order_size: float = 1.0
 
-    def __post_init__(self) -> None:
-        self._yes_pos: dict[str, float] = {}
-        self._no_pos: dict[str, float] = {}
-
     def reset(self) -> None:
-        self._yes_pos.clear()
-        self._no_pos.clear()
+        return None
 
     def on_event(self, state: dict[str, Any]) -> Order | None:
         p = float(state["yes_price"])
-        mid = state["market_id"]
-        yes_pos = self._yes_pos.get(mid, 0.0)
-        no_pos = self._no_pos.get(mid, 0.0)
-
-        # Exit when price fully recovered - lock in profits
-        if yes_pos > 0 and p >= self.exit_yes_at:
-            self._yes_pos[mid] = 0.0
-            return Order(market_id=mid, side="yes", contracts=-yes_pos, reason=self.name)
-        if no_pos > 0 and p <= self.exit_no_at:
-            self._no_pos[mid] = 0.0
-            return Order(market_id=mid, side="no", contracts=-no_pos, reason=self.name)
-
-        # Entry
         if p <= self.buy_yes_below:
-            self._yes_pos[mid] = yes_pos + self.order_size
-            return Order(market_id=mid, side="yes", contracts=self.order_size, reason=self.name)
+            return Order(market_id=state["market_id"], side="yes", contracts=self.order_size, reason=self.name)
         if p >= self.buy_no_above:
-            self._no_pos[mid] = no_pos + self.order_size
-            return Order(market_id=mid, side="no", contracts=self.order_size, reason=self.name)
-
+            return Order(market_id=state["market_id"], side="no", contracts=self.order_size, reason=self.name)
         return None
 
 
@@ -154,5 +130,5 @@ def default_strategy_registry() -> list[Strategy]:
         ThresholdEdgeStrategy(),
         MeanReversionStrategy(),
         OnlineLogisticLikeStrategy(),
-        CapRecycleThresholdStrategy(),
+        TightThresholdStrategy(),
     ]
