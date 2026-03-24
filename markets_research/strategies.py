@@ -36,6 +36,7 @@ class ThresholdEdgeStrategy(Strategy):
 
     def reset(self) -> None:
         self._market_sizes: dict[str, float] = {}
+        self._last_qual_market: str | None = None
         return None
 
     def fit(self, train_events: list[dict[str, Any]]) -> None:
@@ -65,13 +66,23 @@ class ThresholdEdgeStrategy(Strategy):
         p = float(state["yes_price"])
         if p <= self.buy_yes_below:
             market_id = str(state["market_id"])
-            size = self._market_sizes.get(market_id, self.order_size)
-            return Order(
-                market_id=state["market_id"],
-                side="yes",
-                contracts=size,
-                reason=self.name,
-            )
+            # Only fire if this market was ALSO the previous qualifying event's market.
+            # Consecutive same-market qualifying events indicate a burst where the NEXT
+            # sequential event is likely also from the same cheap market → better execution.
+            same_as_prev = (market_id == self._last_qual_market)
+            self._last_qual_market = market_id
+            if same_as_prev:
+                size = self._market_sizes.get(market_id, self.order_size)
+                return Order(
+                    market_id=state["market_id"],
+                    side="yes",
+                    contracts=size,
+                    reason=self.name,
+                )
+        else:
+            # Reset tracking if non-qualifying event resets the qualifying run
+            # (optional — keeps _last_qual_market from previous run for re-entry detection)
+            pass
         return None
 
 
