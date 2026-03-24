@@ -1,0 +1,53 @@
+ Summary:                                    
+                                              
+  ┌─────────────────┬─────────────────────┐   
+  │     Metric      │        Value        │   
+  ├─────────────────┼─────────────────────┤ 
+  │ Total PnL       │ +$1,509             │ 
+  ├─────────────────┼─────────────────────┤
+  │ Return          │ +15.1% on $10k      │
+  ├─────────────────┼─────────────────────┤
+  │ Total fills     │ 17,789              │
+  ├─────────────────┼─────────────────────┤
+  │ YES buys        │ 10,965              │
+  ├─────────────────┼─────────────────────┤
+  │ NO buys         │ 6,774               │
+  ├─────────────────┼─────────────────────┤
+  │ Avg             │ 1.95 (confidence    │
+  │ contracts/fill  │ scaling working)    │
+  ├─────────────────┼─────────────────────┤
+  │ Total fees      │ $13.14              │
+  ├─────────────────┼─────────────────────┤
+  │ Max drawdown    │ -9.2%               │
+  ├─────────────────┼─────────────────────┤
+  │ Sharpe          │ 0.028               │
+  └─────────────────┴─────────────────────┘
+
+  Interesting observations:
+
+  1. 15% in 3 months is strong absolutely —
+  that's ~60% annualized if it held. The
+  strategy is making real money here.
+  2. Sharpe is very low (0.028) — despite the
+  profit, the equity curve is volatile. The
+  drawdown chart shows a rough July with -9%
+  drawdown before recovering. This is the full
+   dataset vs the backtest's 3-fold average on
+   100k rows — the full exposure amplifies
+  variance.
+  3. Only 50 exit fills out of 17,789 — the
+  exit logic almost never fires. The strategy
+  is mostly buying and holding to settlement,
+  not actively recycling capital like
+  intended. That's a red flag — it means
+  positions are being held to settlement
+  rather than taking profit at 0.60.
+  4. The NO buys are clustering at 0.75–1.0
+  (YES-price), confirming the strategy is
+  shorting high-probability YES markets.
+
+  The gap between backtest Sharpe (~1.8) and
+  this real run Sharpe (0.028) suggests the
+  3-fold average with --max-rows 100k is
+  showing a very rosy picture vs full data
+  reality.
