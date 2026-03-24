@@ -154,53 +154,41 @@ class TrendFilteredThresholdStrategy(Strategy):
 
 
 @dataclass
-class FirstPriceQualityStrategy(Strategy):
-    """Scale position size based on first-seen price as market quality signal.
+class FitMarketSelectStrategy(Strategy):
+    """Use fit() to identify sweet-zone markets; reduce size on pure-cheap markets.
 
-    Mechanism: If the first price we observe for a market is in the sweet spot
-    (0.20-0.42), the market is genuinely uncertain and likely YES-biased (strong
-    edge). Use double size. If first price is <0.20, the market is likely correctly
-    priced cheap (little edge). Use half size. This concentrates capital on the
-    highest-quality entry points while still participating in cheap markets.
-    Also applies a mild trend filter (same as TrendFiltered).
+    Mechanism: Data shows only ~2/20 markets have trades in the sweet spot
+    (0.20-0.42) and these generate ALL the profit. The other 18 markets are
+    'pure cheap' (price always < 0.20) and resolve NO, generating small losses.
+    In fit(), learn which markets ever crossed 0.20. In on_event(), give those
+    markets full 1x size. Markets that never crossed 0.20 in train are likely
+    NO-resolving markets — use 0.1x to minimize losses.
     """
-    name: str = "first_price_quality"
+    name: str = "fit_market_select"
     buy_yes_below: float = 0.42
     buy_no_above: float = 0.58
-    sweet_low: float = 0.20
-    sweet_size: float = 2.0
-    cheap_size: float = 0.5
-    lookback: int = 3
+    sweet_threshold: float = 0.20
+    full_size: float = 1.0
+    cheap_only_size: float = 0.1
 
     def __post_init__(self) -> None:
-        self._first_price: dict[str, float] = {}
-        self._market_prices: dict[str, deque] = {}
+        self._sweet_markets: set = set()
 
     def reset(self) -> None:
-        self._first_price.clear()
-        self._market_prices.clear()
+        self._sweet_markets.clear()
+
+    def fit(self, train_events: list[dict[str, Any]]) -> None:
+        for event in train_events:
+            p = float(event.get("yes_price", event.get("price_yes", 0.5)))
+            if p >= self.sweet_threshold:
+                self._sweet_markets.add(event["market_id"])
 
     def on_event(self, state: dict[str, Any]) -> Order | None:
-        mid = state["market_id"]
         p = float(state["yes_price"])
-
-        if mid not in self._first_price:
-            self._first_price[mid] = p
-            self._market_prices[mid] = deque(maxlen=self.lookback + 1)
-        self._market_prices[mid].append(p)
-        hist = self._market_prices[mid]
+        mid = state["market_id"]
 
         if p <= self.buy_yes_below:
-            # Skip if all recent moves are strictly downward
-            if len(hist) >= 2:
-                all_falling = all(hist[i] > hist[i + 1] for i in range(len(hist) - 1))
-                if all_falling:
-                    return None
-            first_p = self._first_price[mid]
-            if first_p >= self.sweet_low:
-                size = self.sweet_size
-            else:
-                size = self.cheap_size
+            size = self.full_size if mid in self._sweet_markets else self.cheap_only_size
             return Order(market_id=mid, side="yes", contracts=size, reason=self.name)
 
         if p >= self.buy_no_above:
@@ -215,6 +203,6 @@ def default_strategy_registry() -> list[Strategy]:
         MeanReversionStrategy(),
         OnlineLogisticLikeStrategy(),
         TrendFilteredThresholdStrategy(),
-        FirstPriceQualityStrategy(),
+        FitMarketSelectStrategy(),
     ]
 
