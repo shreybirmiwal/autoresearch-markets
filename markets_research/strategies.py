@@ -167,13 +167,13 @@ class Yes36NO80Strategy(Strategy):
 
 @dataclass
 class LowVolatilityThresholdStrategy(Strategy):
-    """YES<0.36, NO>0.80 but skip trading when price is highly volatile (3-event range > 5pp).
-    This avoids bad execution from rapid price movements."""
+    """YES<0.36, NO>0.80 but skip trading when price is highly volatile (3-event range > 15pp).
+    More permissive than 5pp - only avoids extreme jumps."""
     name: str = "low_vol_threshold"
     buy_yes_below: float = 0.36
     buy_no_above: float = 0.80
     vol_window: int = 3
-    max_range: float = 0.05  # skip if 3-event price range > 5pp
+    max_range: float = 0.15  # skip if 3-event price range > 15pp (extreme jumps only)
     order_size: float = 1.0
 
     def __post_init__(self) -> None:
@@ -191,7 +191,7 @@ class LowVolatilityThresholdStrategy(Strategy):
             arr = np.array(self._recent)
             recent_range = arr.max() - arr.min()
             if recent_range > self.max_range:
-                return None  # Skip - too volatile, execution risk is high
+                return None  # Skip - extreme volatility, high execution risk
 
         if p <= self.buy_yes_below:
             return Order(market_id=state["market_id"], side="yes", contracts=self.order_size, reason=self.name)
