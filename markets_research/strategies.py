@@ -31,12 +31,11 @@ class ThresholdEdgeStrategy(Strategy):
     """
     name: str = "threshold_edge"
     buy_yes_below: float = 0.45
-    order_size: float = 0.5
+    order_size: float = 0.6
     position_cap: float = 500.0
 
     def reset(self) -> None:
         self._market_sizes: dict[str, float] = {}
-        self._last_qual_market: str | None = None
         return None
 
     def fit(self, train_events: list[dict[str, Any]]) -> None:
@@ -45,9 +44,9 @@ class ThresholdEdgeStrategy(Strategy):
         n = len(train_events)
         # Use last ~1/3 of training (scale-invariant: = one test fold's worth
         # for walk-forward fold 3, regardless of total data size).
-        # At 100k rows: ~25k events → count≈617 < 1000 → size=0.5 (unchanged).
-        # At 1M rows:  ~250k events → count≈6137 > 1000 → size=500/6137≈0.08
-        #   → ALL qualifying events fire, cap exactly filled → full PnL at high density.
+        # At 100k rows: ~25k events → count≈617 < 833 → size=0.6 (unchanged for data-limited).
+        # Cap-limited market (count>833): optimal<0.6 → fit reduces size to fill cap in all events.
+        # At 1M rows:  ~250k events → count≈6137 > 833 → size=500/6137≈0.08 → full density.
         window = train_events[n * 2 // 3:]  # last ~33% of training
         counts: dict[str, int] = defaultdict(int)
         for event in window:
@@ -66,23 +65,13 @@ class ThresholdEdgeStrategy(Strategy):
         p = float(state["yes_price"])
         if p <= self.buy_yes_below:
             market_id = str(state["market_id"])
-            # Only fire if this market was ALSO the previous qualifying event's market.
-            # Consecutive same-market qualifying events indicate a burst where the NEXT
-            # sequential event is likely also from the same cheap market → better execution.
-            same_as_prev = (market_id == self._last_qual_market)
-            self._last_qual_market = market_id
-            if same_as_prev:
-                size = self._market_sizes.get(market_id, self.order_size)
-                return Order(
-                    market_id=state["market_id"],
-                    side="yes",
-                    contracts=size,
-                    reason=self.name,
-                )
-        else:
-            # Reset tracking if non-qualifying event resets the qualifying run
-            # (optional — keeps _last_qual_market from previous run for re-entry detection)
-            pass
+            size = self._market_sizes.get(market_id, self.order_size)
+            return Order(
+                market_id=state["market_id"],
+                side="yes",
+                contracts=size,
+                reason=self.name,
+            )
         return None
 
 
