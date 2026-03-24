@@ -45,7 +45,7 @@ class ThresholdEdgeStrategy(Strategy):
         window = train_events[max(0, n - n // 4):]  # last ~25% of training
         counts: dict[str, int] = defaultdict(int)
         for event in window:
-            if float(event["yes_price"]) <= self.buy_yes_below:
+            if float(event["price_yes"]) <= self.buy_yes_below:
                 counts[str(event["market_id"])] += 1
 
         self._market_sizes = {}
