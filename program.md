@@ -79,27 +79,72 @@ status        : NO_IMPROVEMENT  (0.188 <= prev best 0.201)
 
 Results artifacts are written to: `results/leaderboard.csv`, `results/trade_attribution.csv`, `results/report.json`.
 
+## Strategy exploration map
+
+Strategies fall into distinct **categories**. The biggest risk in autoresearch is converging on one category and micro-tuning it forever while ignoring the rest of the search space. Track which categories you've explored and force yourself to rotate.
+
+| Category | Description | Examples |
+|---|---|---|
+| **threshold-static** | Fixed price cutoffs to buy YES/NO | YES<0.36, NO>0.80 — the current best |
+| **threshold-exit** | Same but with explicit exit/reduce rules | exit when price reverts past midpoint |
+| **mean-reversion** | Signal based on deviation from rolling mean | z-score entry, z-score exit |
+| **momentum** | Trade in direction of recent price movement | buy YES when trending up fast |
+| **order-flow** | Signal based on trade size or trade direction patterns | follow large trades, fade small trades |
+| **price-region** | Different logic per price bucket (e.g. 0-0.2, 0.2-0.5) | aggressive in extremes, neutral in middle |
+| **position-sizing** | Variable bet size based on signal confidence | fractional Kelly, confidence-scaled contracts |
+| **market-context** | Filter or scale by per-market statistics | time-to-close, market liquidity, category |
+| **time-sequence** | Use the sequence/timing of events, not just current price | trade only after N consecutive moves in same direction |
+| **ensemble** | Combine signals from multiple sub-strategies with voting or averaging | only trade when threshold AND momentum agree |
+
+**Exploration rule**: Before each experiment, count how many consecutive `discard` rows you've logged. If **5 or more in a row** are from the same category (e.g. all threshold-static variants), you **must** pick a different category for your next experiment. Do not tune thresholds indefinitely.
+
+## Learning journal
+
+After **every** run (keep or discard), append a line to `learnings.md` (create it if it doesn't exist):
+
+```
+[+0.000 / -0.000] [category] hypothesis → result | WHY: <mechanistic explanation>
+```
+
+The WHY line is mandatory. Do not just say "it didn't improve" — explain the mechanism: why did sharpe drop? why were there too few trades? what does that tell you about the data?
+
+**Example entries:**
+```
+[+0.000] threshold-exit: stop-loss at -0.5 → sharpe 5.47 vs 10.88 | WHY: exits kill positions mid-drift; markets near 0.1 keep drifting further toward 0, not reverting — stop-losses are wrong-signed here
+[+0.000] position-sizing: 2x contracts → pnl 2x but sharpe unchanged then score up then wait sharpe crashed to 7.3 | WHY: doubling size doubles both PnL and variance; for a fixed-signal strategy sharpe is invariant but the score composite weights sharpe heavily so variance hurt us
+[+0.000] market-filter: std<0.05 filter → removes 90% of markets | WHY: prediction market prices are mostly stable near resolution; low-std is the norm, not a filter
+[+0.001] threshold-static: YES<0.37 → score 0.6108 | WHY: slightly wider threshold captures a few more cheap YES that resolve correctly; marginal gain suggests we're near the optimum for this approach
+```
+
+Before forming your next hypothesis, **re-read `learnings.md`** and ask: what patterns am I seeing? What mechanisms keep failing? What territory is genuinely unexplored?
+
 ## The experiment loop
 
 LOOP FOREVER:
 
 1. Look at the git state: confirm the current branch and last commit.
-2. Read `results/report.json` — it contains top win/loss contexts and suggested hypotheses. Form one clear hypothesis: e.g. "momentum at short windows might capture micro-trends", "tighter threshold reduces noise", "add a volume-weighted signal".
-3. Implement it: add a new `Strategy` subclass in `markets_research/strategies.py` and register it in `default_strategy_registry()`. Keep changes minimal — one idea per experiment.
-4. git commit the change.
-5. Run the experiment: `PYTHONPATH=. .venv2/bin/python train.py --data-root data_lake --output-dir results --max-rows 100000 --top-n-markets 20 --skip-robustness > run.log 2>&1`
-6. Read the result: check the final lines of `run.log` for `status`. If the output is missing or the script crashed, run `tail -n 50 run.log` to read the stack trace and attempt a fix.
-7. Log the result to `results.tsv` (tab-separated, NOT comma-separated):
-   ```
-   <7-char commit hash>	<score>	<final_pnl>	<sharpe>	<keep|discard|crash>	<description>
-   ```
-   Do not commit `results.tsv` — leave it untracked.
-8. If IMPROVED: keep the git commit and advance the branch.
-9. If NO_IMPROVEMENT or CRASH: `git checkout markets_research/strategies.py` to revert, then go back to step 1.
+2. **Reflect before acting** — re-read `learnings.md` (if it exists). In 2-3 sentences, state:
+   - What category have I been exploring most? Am I stuck?
+   - What does my learning journal tell me about WHY things have failed?
+   - What is the most promising **unexplored or underexplored category**?
+3. Read `results/report.json` for additional context on win/loss patterns.
+4. **Form one clear hypothesis** with a mechanistic justification. Not "try tighter threshold" — but "hypothesis: markets in the 0.2–0.4 YES price range that saw a large trade in the previous event are more likely to drift toward 0 because large sellers know something; strategy: after a large NO trade, buy YES only if price is 0.25–0.40". One idea, one mechanism, one experiment.
+5. Implement it: add a new `Strategy` subclass in `markets_research/strategies.py` and register it in `default_strategy_registry()`. Keep changes minimal — one idea per experiment.
+6. git commit the change.
+7. Run the experiment: `PYTHONPATH=. .venv2/bin/python train.py --data-root data_lake --output-dir results --max-rows 100000 --top-n-markets 20 --skip-robustness > run.log 2>&1`
+8. Read the result: check the final lines of `run.log` for `status`. If the output is missing or the script crashed, run `tail -n 50 run.log` to read the stack trace and attempt a fix.
+9. **Write your learning entry** in `learnings.md` — explain WHY you think this result happened.
+10. Log the result to `results.tsv` (tab-separated, NOT comma-separated):
+    ```
+    <7-char commit hash>	<score>	<final_pnl>	<sharpe>	<keep|discard|crash>	<description>
+    ```
+    Do not commit `results.tsv` — leave it untracked.
+11. If IMPROVED: keep the git commit and advance the branch.
+12. If NO_IMPROVEMENT or CRASH: `git checkout markets_research/strategies.py` to revert, then go back to step 1.
 
 **Crashes**: If a run crashes, use your judgment. If it's something trivial (typo, missing import), fix it and re-run. If the idea is fundamentally broken, log it as `crash`, revert, and move on. Do not spin on the same broken idea for more than 2–3 attempts.
 
-**NEVER STOP**: Once the experiment loop has begun, do NOT pause to ask the human if you should continue. Do NOT ask "should I keep going?" or "is this a good stopping point?" or "what should I try next?". The human is away from their computer and expects you to continue working *indefinitely* until manually interrupted. You are fully autonomous. If you run out of obvious ideas, think harder — re-read `results/report.json` for new angles, look at which price buckets and market contexts are underexplored, try combining near-misses, try position sizing, try exit logic. The loop runs forever. Never stop.
+**NEVER STOP**: Once the experiment loop has begun, do NOT pause to ask the human if you should continue. Do NOT ask "should I keep going?" or "is this a good stopping point?" or "what should I try next?". The human is away from their computer and expects you to continue working *indefinitely* until manually interrupted. You are fully autonomous. The loop runs forever. Never stop.
 
 As an example use case, a user might leave you running while they sleep. If each experiment takes ~3 minutes, you can run ~20/hour, for a total of ~160 experiments over the course of an average sleep. The user then wakes up to a leaderboard of results, all completed while they slept.
 
