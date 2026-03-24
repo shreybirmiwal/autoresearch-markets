@@ -54,6 +54,8 @@ def main() -> None:
                         help="Skip robustness checks (saves ~3x strategies extra backtests).")
     parser.add_argument("--max-rows", type=int, default=None,
                         help="Hard cap on rows loaded (e.g. 5000 for smoke-testing).")
+    parser.add_argument("--holdout-fraction", type=float, default=0.2,
+                        help="Fraction of rows reserved as held-out test set (never seen during fold tuning). Default 0.2.")
     args = parser.parse_args()
 
     artifacts = run_tournament(
@@ -71,6 +73,7 @@ def main() -> None:
         sample_stride=args.sample_stride,
         skip_robustness=args.skip_robustness,
         max_rows=args.max_rows,
+        holdout_fraction=args.holdout_fraction,
     )
 
     # --- print artifact paths ---
@@ -85,37 +88,51 @@ def main() -> None:
         return
 
     best_row = leaderboard.iloc[0]
-    score = float(best_row["score"])
+    fold_score = float(best_row["score"])
     pnl = float(best_row.get("final_pnl", float("nan")))
     sharpe = float(best_row.get("sharpe", float("nan")))
     strategy_name = str(best_row["strategy"])
+
+    holdout_score = float(best_row["holdout_score"]) if "holdout_score" in best_row.index else None
+    holdout_pnl = float(best_row["holdout_final_pnl"]) if "holdout_final_pnl" in best_row.index else None
+    holdout_sharpe = float(best_row["holdout_sharpe"]) if "holdout_sharpe" in best_row.index else None
+
+    # Use holdout score as primary signal — it was never seen during tuning and
+    # directly measures generalization. Fall back to fold score if holdout absent.
+    primary_score = holdout_score if holdout_score is not None else fold_score
 
     prev_best = _read_best_score(args.results_tsv)
 
     print("\n--- result ---")
     print(f"best_strategy : {strategy_name}")
-    print(f"score         : {score:.4f}   (0.45*sharpe/20 + 0.45*pnl/5000 + 0.10*(1+drawdown))")
-    print(f"final_pnl     : {pnl:.2f}")
-    print(f"sharpe        : {sharpe:.4f}")
+    print(f"fold_score    : {fold_score:.4f}   (0.45*sharpe/20 + 0.45*pnl/5000 + 0.10*(1+drawdown))")
+    print(f"fold_pnl      : {pnl:.2f}")
+    print(f"fold_sharpe   : {sharpe:.4f}")
+    if holdout_score is not None:
+        print(f"holdout_score : {holdout_score:.4f}  <- primary signal (unseen data)")
+        print(f"holdout_pnl   : {holdout_pnl:.2f}")
+        print(f"holdout_sharpe: {holdout_sharpe:.4f}")
+        gap = fold_score - holdout_score
+        print(f"overfit_gap   : {gap:+.4f}  (fold - holdout; positive = overfit)")
 
     if prev_best is None:
         verdict = "FIRST_RUN"
         print(f"\nstatus        : {verdict}  (no previous KEEP in results.tsv)")
-    elif score > prev_best:
+    elif primary_score > prev_best:
         verdict = "IMPROVED"
-        print(f"\nstatus        : {verdict}  ({score:.4f} > prev best {prev_best:.4f})")
+        print(f"\nstatus        : {verdict}  ({primary_score:.4f} > prev best {prev_best:.4f})")
     else:
         verdict = "NO_IMPROVEMENT"
-        print(f"\nstatus        : {verdict}  ({score:.4f} <= prev best {prev_best:.4f})")
+        print(f"\nstatus        : {verdict}  ({primary_score:.4f} <= prev best {prev_best:.4f})")
 
     print("\n--- suggested next action ---")
     if verdict in ("FIRST_RUN", "IMPROVED"):
         print("  git add markets_research/strategies.py")
         print("  git commit -m 'keep: <one-line description of what changed>'")
-        print(f"  then append to results.tsv: <commit>\\t{score:.4f}\\t{pnl:.2f}\\t{sharpe:.4f}\\tkeep\\t<description>")
+        print(f"  then append to results.tsv: <commit>\\t{primary_score:.4f}\\t{pnl:.2f}\\t{sharpe:.4f}\\tkeep\\t<description>")
     else:
         print("  git checkout markets_research/strategies.py   # discard this attempt")
-        print(f"  then append to results.tsv: <commit>\\t{score:.4f}\\t{pnl:.2f}\\t{sharpe:.4f}\\tdiscard\\t<description>")
+        print(f"  then append to results.tsv: <commit>\\t{primary_score:.4f}\\t{pnl:.2f}\\t{sharpe:.4f}\\tdiscard\\t<description>")
 
 
 if __name__ == "__main__":

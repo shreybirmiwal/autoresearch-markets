@@ -86,6 +86,14 @@ def _filter_market_universe(
     return out_trades, out_markets
 
 
+def _compute_holdout_score(sharpe: float, final_pnl: float, max_drawdown: float) -> float:
+    return (
+        0.45 * min(sharpe, 30) / 20.0
+        + 0.45 * min(final_pnl, 7500) / 5000.0
+        + 0.10 * (1.0 + max_drawdown)
+    )
+
+
 def run_tournament(
     data_root: Path,
     output_dir: Path,
@@ -96,6 +104,7 @@ def run_tournament(
     sample_stride: int = 1,
     skip_robustness: bool = False,
     max_rows: int | None = None,
+    holdout_fraction: float = 0.2,
 ) -> dict[str, Path]:
     strategies = strategies or default_strategy_registry()
     trades = _load_latest_trades(data_root, sample_stride=sample_stride, max_rows=max_rows)
@@ -117,12 +126,20 @@ def run_tournament(
     trades = trades[trades["market_id"].astype(str).isin(settled_ids)].copy()
     markets = markets[markets["market_id"].astype(str).isin(settled_ids)].copy()
 
+    # Split off a chronological holdout that walk-forward folds never touch.
+    # The holdout score is the primary signal for IMPROVED comparisons — this
+    # prevents the agent from slowly curve-fitting to the tuning window.
+    trades_sorted = trades.sort_values("event_ts").reset_index(drop=True)
+    holdout_start = max(1, int(len(trades_sorted) * (1.0 - holdout_fraction)))
+    tuning_trades = trades_sorted.iloc[:holdout_start].copy()
+    holdout_trades = trades_sorted.iloc[holdout_start:].copy()
+
     rows: list[dict[str, float | str]] = []
     attribution_outputs: list[pd.DataFrame] = []
     for strategy in strategies:
         strategy.reset()
         fold_metrics: list[dict[str, float]] = []
-        for train_df, test_df in _walk_forward_splits(trades, folds=3):
+        for train_df, test_df in _walk_forward_splits(tuning_trades, folds=3):
             labels = _build_next_tick_labels(train_df)
             train_events = train_df.assign(label=labels).to_dict(orient="records")
             strategy.fit(train_events)
@@ -140,17 +157,46 @@ def run_tournament(
     context = summarize_win_loss_contexts(all_attr)
     hypotheses = propose_next_hypotheses(context)
 
+    # Evaluate every strategy on the held-out window.
+    # Fit on full tuning set first so the holdout sees a properly-trained model.
+    holdout_rows: list[dict[str, float | str]] = []
+    if not holdout_trades.empty:
+        for strategy in strategies:
+            strategy.reset()
+            labels = _build_next_tick_labels(tuning_trades)
+            train_events = tuning_trades.assign(label=labels).to_dict(orient="records")
+            strategy.fit(train_events)
+            equity, fills = run_backtest(holdout_trades, settlement, strategy, backtest_cfg)
+            attrib = build_trade_attribution(fills, settlement)
+            m = compute_metrics(equity, attrib)
+            holdout_rows.append({"strategy": strategy.name, **{f"holdout_{k}": v for k, v in m.items()}})
+
+    holdout_df = pd.DataFrame(holdout_rows) if holdout_rows else pd.DataFrame()
+    if not holdout_df.empty and not leaderboard.empty:
+        leaderboard = leaderboard.merge(holdout_df, on="strategy", how="left")
+        if {"holdout_sharpe", "holdout_final_pnl", "holdout_max_drawdown"}.issubset(leaderboard.columns):
+            leaderboard["holdout_score"] = leaderboard.apply(
+                lambda r: _compute_holdout_score(r["holdout_sharpe"], r["holdout_final_pnl"], r["holdout_max_drawdown"]),
+                axis=1,
+            )
+
     output_dir.mkdir(parents=True, exist_ok=True)
     leaderboard_path = output_dir / "leaderboard.csv"
     attribution_path = output_dir / "trade_attribution.csv"
     report_path = output_dir / "report.json"
     leaderboard.to_csv(leaderboard_path, index=False)
     all_attr.to_csv(attribution_path, index=False)
-    robustness = [] if skip_robustness else run_robustness_checks(trades, settlement, strategies, backtest_cfg)
+    robustness = [] if skip_robustness else run_robustness_checks(tuning_trades, settlement, strategies, backtest_cfg)
+
+    best_row = leaderboard.iloc[0] if not leaderboard.empty else None
     report_path.write_text(
         json.dumps(
             {
-                "best_strategy": leaderboard.iloc[0]["strategy"] if not leaderboard.empty else None,
+                "best_strategy": best_row["strategy"] if best_row is not None else None,
+                "fold_score": float(best_row["score"]) if best_row is not None else None,
+                "holdout_score": float(best_row["holdout_score"]) if best_row is not None and "holdout_score" in best_row.index else None,
+                "holdout_pnl": float(best_row["holdout_final_pnl"]) if best_row is not None and "holdout_final_pnl" in best_row.index else None,
+                "holdout_sharpe": float(best_row["holdout_sharpe"]) if best_row is not None and "holdout_sharpe" in best_row.index else None,
                 "top_wins": context["top_wins"].to_dict(orient="records"),
                 "top_losses": context["top_losses"].to_dict(orient="records"),
                 "next_hypotheses": hypotheses,
@@ -227,4 +273,3 @@ def run_robustness_checks(
 
 if __name__ == "__main__":
     main()
-
