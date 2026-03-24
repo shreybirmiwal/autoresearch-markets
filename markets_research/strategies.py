@@ -106,29 +106,50 @@ class OnlineLogisticLikeStrategy(Strategy):
 
 
 @dataclass
-class BandedThresholdStrategy(Strategy):
-    """Buy YES only in a price band (avoid near-zero markets heading to 0).
+class TrendFilteredThresholdStrategy(Strategy):
+    """Buy YES only when the per-market recent price trend is non-negative.
 
-    Mechanism: markets priced below 0.20 are mostly resolving NO (informed
-    sellers have already pushed price down). Buying YES there is wrong-sided.
-    By adding a lower bound, we concentrate on genuinely uncertain markets.
-    Similarly, NO buys only above 0.65 to avoid the lossy (0.58-0.65) zone.
+    Mechanism: Consistent price drops in a market signal informed sellers
+    who know the market will resolve NO. Buying YES against a falling trend
+    is wrong-sided. We only buy YES when price is flat or rising over the
+    last `lookback` events for that market, indicating no strong informed
+    selling. This selectively captures cheap YES positions in markets that
+    are holding value, not drifting to 0.
     """
-    name: str = "banded_threshold"
-    buy_yes_low: float = 0.20
-    buy_yes_high: float = 0.42
-    buy_no_low: float = 0.65
+    name: str = "trend_filtered_threshold"
+    buy_yes_below: float = 0.42
+    buy_no_above: float = 0.58
+    lookback: int = 3
     order_size: float = 1.0
 
+    def __post_init__(self) -> None:
+        self._market_prices: dict[str, deque] = {}
+
     def reset(self) -> None:
-        return None
+        self._market_prices.clear()
 
     def on_event(self, state: dict[str, Any]) -> Order | None:
+        mid = state["market_id"]
         p = float(state["yes_price"])
-        if self.buy_yes_low <= p <= self.buy_yes_high:
+
+        if mid not in self._market_prices:
+            self._market_prices[mid] = deque(maxlen=self.lookback + 1)
+        self._market_prices[mid].append(p)
+
+        hist = self._market_prices[mid]
+
+        if p <= self.buy_yes_below:
+            # Only buy YES if not all recent moves are downward
+            if len(hist) >= 2:
+                # Check if every consecutive pair is strictly decreasing
+                all_falling = all(hist[i] > hist[i + 1] for i in range(len(hist) - 1))
+                if all_falling:
+                    return None
             return Order(market_id=state["market_id"], side="yes", contracts=self.order_size, reason=self.name)
-        if p >= self.buy_no_low:
+
+        if p >= self.buy_no_above:
             return Order(market_id=state["market_id"], side="no", contracts=self.order_size, reason=self.name)
+
         return None
 
 
@@ -137,6 +158,6 @@ def default_strategy_registry() -> list[Strategy]:
         ThresholdEdgeStrategy(),
         MeanReversionStrategy(),
         OnlineLogisticLikeStrategy(),
-        BandedThresholdStrategy(),
+        TrendFilteredThresholdStrategy(),
     ]
 
