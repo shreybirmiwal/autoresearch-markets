@@ -162,11 +162,70 @@ class LargeTradeFollowerStrategy(Strategy):
         return None
 
 
+@dataclass
+class ConfirmationDriftStrategy(Strategy):
+    """Buy YES during upward price momentum in uncertain range.
+
+    Mechanism: A market drifting steadily upward (N consecutive price increases)
+    in the 0.20-0.50 range is in confirmation drift — growing consensus about a
+    YES outcome. Buy during this momentum phase and exit when the drift ends
+    (take-profit or momentum reversal).
+    """
+
+    name: str = "confirmation_drift"
+    momentum_window: int = 5
+    entry_min: float = 0.20
+    entry_max: float = 0.50
+    exit_take_profit: float = 0.75
+    exit_reversal_count: int = 3
+    order_size: float = 1.0
+
+    def __post_init__(self) -> None:
+        self._market_prices: dict[str, deque] = {}
+
+    def reset(self) -> None:
+        self._market_prices.clear()
+
+    def on_event(self, state: dict[str, Any]) -> Order | None:
+        mid = str(state["market_id"])
+        p = float(state["yes_price"])
+        pos_yes = float(state["position_yes_contracts"])
+
+        if mid not in self._market_prices:
+            self._market_prices[mid] = deque(maxlen=self.momentum_window + self.exit_reversal_count)
+        hist = self._market_prices[mid]
+
+        # Exit: take profit or momentum reversal
+        if pos_yes > 0:
+            hist.append(p)
+            if p >= self.exit_take_profit:
+                return Order(market_id=state["market_id"], side="yes", contracts=-pos_yes, reason=self.name)
+            # momentum reversal: last exit_reversal_count prices all declining
+            if len(hist) >= self.exit_reversal_count:
+                recent = list(hist)[-self.exit_reversal_count:]
+                if all(recent[i] > recent[i + 1] for i in range(len(recent) - 1)):
+                    return Order(market_id=state["market_id"], side="yes", contracts=-pos_yes, reason=self.name)
+            return None
+
+        hist.append(p)
+        if len(hist) < self.momentum_window:
+            return None
+
+        # Entry: last momentum_window prices all strictly increasing in target range
+        recent = list(hist)[-self.momentum_window:]
+        all_rising = all(recent[i] < recent[i + 1] for i in range(len(recent) - 1))
+        if all_rising and self.entry_min <= p <= self.entry_max:
+            return Order(market_id=state["market_id"], side="yes", contracts=self.order_size, reason=self.name)
+
+        return None
+
+
 def default_strategy_registry() -> list[Strategy]:
     return [
         ThresholdEdgeStrategy(),
         MeanReversionStrategy(),
         OnlineLogisticLikeStrategy(),
         LargeTradeFollowerStrategy(),
+        ConfirmationDriftStrategy(),
     ]
 
