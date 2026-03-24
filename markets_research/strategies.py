@@ -105,10 +105,38 @@ class OnlineLogisticLikeStrategy(Strategy):
         return None
 
 
+@dataclass
+class BandedThresholdStrategy(Strategy):
+    """Buy YES only in a price band (avoid near-zero markets heading to 0).
+
+    Mechanism: markets priced below 0.20 are mostly resolving NO (informed
+    sellers have already pushed price down). Buying YES there is wrong-sided.
+    By adding a lower bound, we concentrate on genuinely uncertain markets.
+    Similarly, NO buys only above 0.65 to avoid the lossy (0.58-0.65) zone.
+    """
+    name: str = "banded_threshold"
+    buy_yes_low: float = 0.20
+    buy_yes_high: float = 0.42
+    buy_no_low: float = 0.65
+    order_size: float = 1.0
+
+    def reset(self) -> None:
+        return None
+
+    def on_event(self, state: dict[str, Any]) -> Order | None:
+        p = float(state["yes_price"])
+        if self.buy_yes_low <= p <= self.buy_yes_high:
+            return Order(market_id=state["market_id"], side="yes", contracts=self.order_size, reason=self.name)
+        if p >= self.buy_no_low:
+            return Order(market_id=state["market_id"], side="no", contracts=self.order_size, reason=self.name)
+        return None
+
+
 def default_strategy_registry() -> list[Strategy]:
     return [
         ThresholdEdgeStrategy(),
         MeanReversionStrategy(),
         OnlineLogisticLikeStrategy(),
+        BandedThresholdStrategy(),
     ]
 
