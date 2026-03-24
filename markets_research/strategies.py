@@ -190,11 +190,63 @@ class MeanReversionBandYesStrategy(Strategy):
         return None
 
 
+@dataclass
+class LocalMinBoostYesStrategy(Strategy):
+    """Price band YES with double contracts at confirmed local minimums.
+    Mechanism: buy YES in (0.20, 0.42] like price_band_yes, but 2x contracts when
+    a local minimum is confirmed (price went DOWN last event, now going UP).
+    Local min trades have 0.623 avg_pnl vs 0.455 for all band trades — size boost
+    at reversal points extracts more from the highest-quality subset.
+    Base size 1 contract; local min size 2 contracts; exit at 0.65.
+    """
+    name: str = "local_min_boost_yes"
+    buy_yes_low: float = 0.20
+    buy_yes_high: float = 0.42
+    exit_above: float = 0.65
+    base_size: float = 1.0
+    boost_size: float = 2.0
+
+    def __post_init__(self) -> None:
+        self._market_prev_price: dict[str, float] = {}
+        self._market_prev_prev_price: dict[str, float] = {}
+
+    def reset(self) -> None:
+        self._market_prev_price.clear()
+        self._market_prev_prev_price.clear()
+
+    def on_event(self, state: dict[str, Any]) -> Order | None:
+        mid = state["market_id"]
+        p = float(state["yes_price"])
+        pos = float(state.get("position_yes_contracts", 0.0))
+
+        prev = self._market_prev_price.get(mid)
+        prev_prev = self._market_prev_prev_price.get(mid)
+
+        # Update history
+        if prev is not None:
+            self._market_prev_prev_price[mid] = prev
+        self._market_prev_price[mid] = p
+
+        # Exit: take profit
+        if pos > 0 and p >= self.exit_above:
+            return Order(market_id=mid, side="yes", contracts=-pos, reason=self.name + "_exit")
+
+        if self.buy_yes_low < p <= self.buy_yes_high:
+            # Check for local minimum: down then up
+            is_local_min = (prev is not None and prev_prev is not None
+                           and p > prev and prev < prev_prev)
+            contracts = self.boost_size if is_local_min else self.base_size
+            return Order(market_id=mid, side="yes", contracts=contracts, reason=self.name)
+
+        return None
+
+
 def default_strategy_registry() -> list[Strategy]:
     return [
         ThresholdEdgeStrategy(),
         MeanReversionStrategy(),
         PriceBandBuyYesStrategy(),
         MeanReversionBandYesStrategy(),
+        LocalMinBoostYesStrategy(),
     ]
 
