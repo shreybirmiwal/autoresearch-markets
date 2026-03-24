@@ -154,57 +154,42 @@ class TrendFilteredThresholdStrategy(Strategy):
 
 
 @dataclass
-class StableCheapBoostStrategy(Strategy):
-    """Larger position when market has been cheap for a long time (stable, likely mispriced).
+class HighWaterMarkStrategy(Strategy):
+    """Buy YES only in markets that have demonstrated price viability.
 
-    Mechanism: A market freshly dropped to cheap prices may reflect informed
-    selling (smart money knows it's NO). A market stuck at cheap prices for
-    50+ events has no active selling pressure — it's a stable longshot that
-    the market may be anchoring incorrectly. These stable cheap markets are
-    better candidates for YES buys. Conversely, fresh cheap entries (<10
-    consecutive events) are more likely informed selling — use smaller size.
+    Mechanism: Markets that have ONLY traded at very low prices (< min_viable_price)
+    have achieved informational consensus at a near-zero probability — the market
+    participants collectively see no meaningful YES potential. Markets that have
+    ever traded above the threshold retain genuine uncertainty. This filters out
+    the large cluster of near-zero markets that systematically resolve NO, while
+    preserving full exposure to the rare markets that eventually resolve YES
+    (which always show prices above the threshold early on).
     """
-    name: str = "stable_cheap_boost"
+    name: str = "high_water_mark"
     buy_yes_below: float = 0.42
     buy_no_above: float = 0.58
-    cheap_threshold: float = 0.20
-    stable_min_events: int = 50
-    fresh_max_events: int = 10
-    stable_size: float = 1.5
-    fresh_size: float = 0.4
-    base_size: float = 1.0
+    min_viable_price: float = 0.10
+    order_size: float = 1.0
 
     def __post_init__(self) -> None:
-        self._cheap_count: dict[str, int] = {}
+        self._max_price: dict[str, float] = {}
 
     def reset(self) -> None:
-        self._cheap_count.clear()
+        self._max_price.clear()
 
     def on_event(self, state: dict[str, Any]) -> Order | None:
         mid = state["market_id"]
         p = float(state["yes_price"])
 
-        # Track consecutive events in cheap zone
-        if mid not in self._cheap_count:
-            self._cheap_count[mid] = 0
-
-        if p < self.cheap_threshold:
-            self._cheap_count[mid] += 1
-        else:
-            self._cheap_count[mid] = 0  # reset on exit from cheap zone
+        self._max_price[mid] = max(self._max_price.get(mid, 0.0), p)
 
         if p <= self.buy_yes_below:
-            count = self._cheap_count[mid]
-            if count >= self.stable_min_events:
-                size = self.stable_size
-            elif count <= self.fresh_max_events and count > 0:
-                size = self.fresh_size
-            else:
-                size = self.base_size
-            return Order(market_id=mid, side="yes", contracts=size, reason=self.name)
+            if self._max_price[mid] < self.min_viable_price:
+                return None
+            return Order(market_id=state["market_id"], side="yes", contracts=self.order_size, reason=self.name)
 
         if p >= self.buy_no_above:
-            return Order(market_id=mid, side="no", contracts=1.0, reason=self.name)
+            return Order(market_id=state["market_id"], side="no", contracts=self.order_size, reason=self.name)
 
         return None
 
@@ -215,6 +200,6 @@ def default_strategy_registry() -> list[Strategy]:
         MeanReversionStrategy(),
         OnlineLogisticLikeStrategy(),
         TrendFilteredThresholdStrategy(),
-        StableCheapBoostStrategy(),
+        HighWaterMarkStrategy(),
     ]
 
