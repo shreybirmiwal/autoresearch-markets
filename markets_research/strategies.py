@@ -106,33 +106,62 @@ class OnlineLogisticLikeStrategy(Strategy):
 
 
 @dataclass
-class DeepValueYesStrategy(Strategy):
-    """Buy YES at very low prices (deep value), exit when price recovers."""
-    name: str = "deep_value_yes"
-    entry_below: float = 0.15
-    exit_above: float = 0.35
+class DualMeanReversionStrategy(Strategy):
+    """Two-speed mean reversion: buy YES when both short/long windows say price is low.
+    Also includes exit logic when price recovers to mean."""
+    name: str = "dual_mean_reversion"
+    short_window: int = 10
+    long_window: int = 100
+    z_entry: float = 1.0
     order_size: float = 1.0
 
     def __post_init__(self) -> None:
-        self._position: dict[str, float] = {}
+        self._short_hist: deque[float] = deque(maxlen=self.short_window)
+        self._long_hist: deque[float] = deque(maxlen=self.long_window)
+        self._position: dict[str, str] = {}  # market_id -> 'yes' or 'no'
 
     def reset(self) -> None:
+        self._short_hist.clear()
+        self._long_hist.clear()
         self._position.clear()
 
     def on_event(self, state: dict[str, Any]) -> Order | None:
         p = float(state["yes_price"])
         mid = state["market_id"]
-        pos = self._position.get(mid, 0.0)
+        self._short_hist.append(p)
+        self._long_hist.append(p)
 
-        # Exit: reduce position when price has recovered
-        if pos > 0 and p >= self.exit_above:
-            self._position[mid] = 0.0
-            return Order(market_id=mid, side="yes", contracts=-pos, reason=self.name)
+        if len(self._long_hist) < self.long_window:
+            return None
 
-        # Entry: buy YES at deep value prices
-        if p <= self.entry_below:
-            self._position[mid] = pos + self.order_size
+        short_arr = np.array(self._short_hist, dtype=np.float64)
+        long_arr = np.array(self._long_hist, dtype=np.float64)
+
+        short_std = short_arr.std()
+        long_std = long_arr.std()
+        if short_std <= 1e-9 or long_std <= 1e-9:
+            return None
+
+        short_z = (p - short_arr.mean()) / short_std
+        long_z = (p - long_arr.mean()) / long_std
+
+        pos = self._position.get(mid)
+
+        # Exit logic
+        if pos == "yes" and short_z >= 0 and long_z >= 0:
+            self._position.pop(mid)
+            return Order(market_id=mid, side="yes", contracts=-self.order_size, reason=self.name)
+        if pos == "no" and short_z <= 0 and long_z <= 0:
+            self._position.pop(mid)
+            return Order(market_id=mid, side="no", contracts=-self.order_size, reason=self.name)
+
+        # Entry: only if both windows agree price is significantly deviated
+        if short_z <= -self.z_entry and long_z <= -self.z_entry and pos != "yes":
+            self._position[mid] = "yes"
             return Order(market_id=mid, side="yes", contracts=self.order_size, reason=self.name)
+        if short_z >= self.z_entry and long_z >= self.z_entry and pos != "no":
+            self._position[mid] = "no"
+            return Order(market_id=mid, side="no", contracts=self.order_size, reason=self.name)
 
         return None
 
@@ -142,6 +171,6 @@ def default_strategy_registry() -> list[Strategy]:
         ThresholdEdgeStrategy(),
         MeanReversionStrategy(),
         OnlineLogisticLikeStrategy(),
-        DeepValueYesStrategy(),
+        DualMeanReversionStrategy(),
     ]
 
