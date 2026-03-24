@@ -48,6 +48,12 @@ def main() -> None:
     parser.add_argument("--slippage-bps", type=float, default=5.0)
     parser.add_argument("--latency-events", type=int, default=1)
     parser.add_argument("--max-position-contracts", type=float, default=500.0)
+    parser.add_argument("--sample-stride", type=int, default=1,
+                        help="Keep 1-in-N trade rows (e.g. 5 = 5x fewer rows, much faster). Default 1 = all rows.")
+    parser.add_argument("--skip-robustness", action="store_true",
+                        help="Skip robustness checks (saves ~3x strategies extra backtests).")
+    parser.add_argument("--max-rows", type=int, default=None,
+                        help="Hard cap on rows loaded (e.g. 5000 for smoke-testing).")
     args = parser.parse_args()
 
     artifacts = run_tournament(
@@ -62,6 +68,9 @@ def main() -> None:
         ),
         market_category=args.market_category,
         top_n_markets=args.top_n_markets,
+        sample_stride=args.sample_stride,
+        skip_robustness=args.skip_robustness,
+        max_rows=args.max_rows,
     )
 
     # --- print artifact paths ---

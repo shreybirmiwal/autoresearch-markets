@@ -12,13 +12,20 @@ from markets_research.scoring import compute_metrics, rank_experiments
 from markets_research.strategies import Strategy, default_strategy_registry
 
 
-def _load_latest_trades(data_root: Path) -> pd.DataFrame:
+_TRADE_COLUMNS = ["market_id", "ticker", "event_ts", "price_yes", "size"]
+
+
+def _load_latest_trades(data_root: Path, sample_stride: int = 1, max_rows: int | None = None) -> pd.DataFrame:
     trade_files = sorted((data_root / "trades").glob("**/*.parquet"))
     if not trade_files:
         raise FileNotFoundError("No parquet trades found. Run Kalshi ingest first.")
-    dfs = [pd.read_parquet(p) for p in trade_files]
+    dfs = [pd.read_parquet(p, columns=_TRADE_COLUMNS) for p in trade_files]
     out = pd.concat(dfs, ignore_index=True)
     out["event_ts"] = pd.to_datetime(out["event_ts"], utc=True)
+    if max_rows is not None:
+        out = out.head(max_rows)
+    elif sample_stride > 1:
+        out = out.sort_values(["market_id", "event_ts"]).iloc[::sample_stride].copy()
     return out
 
 
@@ -81,9 +88,12 @@ def run_tournament(
     strategies: list[Strategy] | None = None,
     market_category: str | None = None,
     top_n_markets: int = 200,
+    sample_stride: int = 1,
+    skip_robustness: bool = False,
+    max_rows: int | None = None,
 ) -> dict[str, Path]:
     strategies = strategies or default_strategy_registry()
-    trades = _load_latest_trades(data_root)
+    trades = _load_latest_trades(data_root, sample_stride=sample_stride, max_rows=max_rows)
     markets = _load_latest_markets(data_root)
     trades, markets = _filter_market_universe(trades, markets, market_category, top_n_markets)
     if trades.empty or markets.empty:
@@ -125,6 +135,7 @@ def run_tournament(
     report_path = output_dir / "report.json"
     leaderboard.to_csv(leaderboard_path, index=False)
     all_attr.to_csv(attribution_path, index=False)
+    robustness = [] if skip_robustness else run_robustness_checks(trades, settlement, strategies, backtest_cfg)
     report_path.write_text(
         json.dumps(
             {
@@ -132,7 +143,7 @@ def run_tournament(
                 "top_wins": context["top_wins"].to_dict(orient="records"),
                 "top_losses": context["top_losses"].to_dict(orient="records"),
                 "next_hypotheses": hypotheses,
-                "robustness_checks": run_robustness_checks(trades, settlement, strategies, backtest_cfg),
+                "robustness_checks": robustness,
             },
             indent=2,
         ),

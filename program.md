@@ -49,8 +49,13 @@ Higher is better. Strategies with fewer than 10 trades or worse than -50% drawdo
 ## Running an experiment
 
 ```bash
-PYTHONPATH=. .venv2/bin/python train.py --data-root data_lake --output-dir results > run.log 2>&1
+PYTHONPATH=. .venv2/bin/python train.py --data-root data_lake --output-dir results --max-rows 100000 --top-n-markets 20 --skip-robustness > run.log 2>&1
 ```
+
+**Speed flags:**
+- `--max-rows 100000`: cap at 100k trade rows (~13s per run vs 10+ min). Use `--max-rows 1000000` for a slower but more representative run.
+- `--top-n-markets 20`: evaluate on 20 most-active markets instead of 200
+- `--skip-robustness`: skip the 3-slippage robustness pass
 
 The final lines will show:
 
@@ -74,7 +79,7 @@ LOOP FOREVER:
 2. Read `results/report.json` — it contains top win/loss contexts and suggested hypotheses. Form one clear hypothesis: e.g. "momentum at short windows might capture micro-trends", "tighter threshold reduces noise", "add a volume-weighted signal".
 3. Implement it: add a new `Strategy` subclass in `markets_research/strategies.py` and register it in `default_strategy_registry()`. Keep changes minimal — one idea per experiment.
 4. git commit the change.
-5. Run the experiment: `PYTHONPATH=. .venv2/bin/python train.py --data-root data_lake --output-dir results > run.log 2>&1`
+5. Run the experiment: `PYTHONPATH=. .venv2/bin/python train.py --data-root data_lake --output-dir results --max-rows 100000 --top-n-markets 20 --skip-robustness > run.log 2>&1`
 6. Read the result: check the final lines of `run.log` for `status`. If the output is missing or the script crashed, run `tail -n 50 run.log` to read the stack trace and attempt a fix.
 7. Log the result to `results.tsv` (tab-separated, NOT comma-separated):
    ```
