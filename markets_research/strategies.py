@@ -126,26 +126,6 @@ class MidThresholdStrategy(Strategy):
 
 
 @dataclass
-class AsymmetricThresholdStrategy(Strategy):
-    """Asymmetric: tighter YES threshold, tighter NO threshold to reduce bad trades."""
-    name: str = "asymmetric_threshold"
-    buy_yes_below: float = 0.35
-    buy_no_above: float = 0.70
-    order_size: float = 1.0
-
-    def reset(self) -> None:
-        return None
-
-    def on_event(self, state: dict[str, Any]) -> Order | None:
-        p = float(state["yes_price"])
-        if p <= self.buy_yes_below:
-            return Order(market_id=state["market_id"], side="yes", contracts=self.order_size, reason=self.name)
-        if p >= self.buy_no_above:
-            return Order(market_id=state["market_id"], side="no", contracts=self.order_size, reason=self.name)
-        return None
-
-
-@dataclass
 class AsymmetricThreshold75Strategy(Strategy):
     """Asymmetric: YES below 0.35, NO above 0.75 for higher quality NO trades."""
     name: str = "asym_threshold_75"
@@ -186,26 +166,6 @@ class AsymmetricThreshold80Strategy(Strategy):
 
 
 @dataclass
-class AsymmetricThreshold85Strategy(Strategy):
-    """Asymmetric: YES below 0.35, NO above 0.85 for very high quality NO trades."""
-    name: str = "asym_threshold_85"
-    buy_yes_below: float = 0.35
-    buy_no_above: float = 0.85
-    order_size: float = 1.0
-
-    def reset(self) -> None:
-        return None
-
-    def on_event(self, state: dict[str, Any]) -> Order | None:
-        p = float(state["yes_price"])
-        if p <= self.buy_yes_below:
-            return Order(market_id=state["market_id"], side="yes", contracts=self.order_size, reason=self.name)
-        if p >= self.buy_no_above:
-            return Order(market_id=state["market_id"], side="no", contracts=self.order_size, reason=self.name)
-        return None
-
-
-@dataclass
 class YesWiderNO80Strategy(Strategy):
     """YES below 0.38 (slightly wider), NO above 0.80."""
     name: str = "yes_wider_no80"
@@ -226,41 +186,21 @@ class YesWiderNO80Strategy(Strategy):
 
 
 @dataclass
-class PriceUpTrendThresholdStrategy(Strategy):
-    """Buy YES below 0.38 only when short-term price trend is UP (price bouncing).
-    This avoids buying into a falling knife - wait for confirmation of reversal."""
-    name: str = "uptrend_threshold"
-    buy_yes_below: float = 0.38
+class Yes37NO80Strategy(Strategy):
+    """Fine-tuned: YES below 0.37, NO above 0.80."""
+    name: str = "yes37_no80"
+    buy_yes_below: float = 0.37
     buy_no_above: float = 0.80
-    trend_window: int = 5
     order_size: float = 1.0
 
-    def __post_init__(self) -> None:
-        self._recent: deque[float] = deque(maxlen=self.trend_window)
-
     def reset(self) -> None:
-        self._recent.clear()
+        return None
 
     def on_event(self, state: dict[str, Any]) -> Order | None:
         p = float(state["yes_price"])
-        self._recent.append(p)
-
-        if len(self._recent) < self.trend_window:
-            # Not enough history - fall back to plain threshold
-            if p <= self.buy_yes_below:
-                return Order(market_id=state["market_id"], side="yes", contracts=self.order_size, reason=self.name)
-            if p >= self.buy_no_above:
-                return Order(market_id=state["market_id"], side="no", contracts=self.order_size, reason=self.name)
-            return None
-
-        arr = np.array(self._recent)
-        trend = arr[-1] - arr[0]  # positive = upward trend
-
-        if p <= self.buy_yes_below and trend >= 0:
-            # Price is low AND trending up - good reversal signal
+        if p <= self.buy_yes_below:
             return Order(market_id=state["market_id"], side="yes", contracts=self.order_size, reason=self.name)
-        if p >= self.buy_no_above and trend <= 0:
-            # Price is high AND trending down - good fade signal
+        if p >= self.buy_no_above:
             return Order(market_id=state["market_id"], side="no", contracts=self.order_size, reason=self.name)
         return None
 
@@ -271,10 +211,8 @@ def default_strategy_registry() -> list[Strategy]:
         MeanReversionStrategy(),
         OnlineLogisticLikeStrategy(),
         MidThresholdStrategy(),
-        AsymmetricThresholdStrategy(),
         AsymmetricThreshold75Strategy(),
         AsymmetricThreshold80Strategy(),
-        AsymmetricThreshold85Strategy(),
         YesWiderNO80Strategy(),
-        PriceUpTrendThresholdStrategy(),
+        Yes37NO80Strategy(),
     ]
