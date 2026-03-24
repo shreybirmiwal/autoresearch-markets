@@ -254,7 +254,7 @@ class ExitAwareBandedStrategy(Strategy):
     name: str = "exit_aware_banded"
     buy_yes_low: float = 0.20
     buy_yes_high: float = 0.42
-    exit_yes_above: float = 0.55
+    exit_yes_above: float = 0.60
     buy_no_above: float = 0.65
     order_size: float = 1.0
 
