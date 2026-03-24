@@ -43,8 +43,8 @@ class HybridEdgeStrategy(Strategy):
     extended_threshold: float = 0.60
     good_hour_start: int = 3
     good_hour_end: int = 11
-    rolling_window: int = 3
-    cheap_fraction_min: float = 0.40
+    rolling_window: int = 5
+    cheap_fraction_min: float = 0.60
     vwap_threshold: float = 0.30  # VWAP signal: if recent VWAP ≤ this, extend
     order_size: float = 0.65
     position_cap: float = 500.0
