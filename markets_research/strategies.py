@@ -226,19 +226,42 @@ class YesWiderNO80Strategy(Strategy):
 
 
 @dataclass
-class YesOnlyStrategy(Strategy):
-    """Pure YES-only strategy: only buy YES at low prices, never trade NO side."""
-    name: str = "yes_only"
+class PriceUpTrendThresholdStrategy(Strategy):
+    """Buy YES below 0.38 only when short-term price trend is UP (price bouncing).
+    This avoids buying into a falling knife - wait for confirmation of reversal."""
+    name: str = "uptrend_threshold"
     buy_yes_below: float = 0.38
+    buy_no_above: float = 0.80
+    trend_window: int = 5
     order_size: float = 1.0
 
+    def __post_init__(self) -> None:
+        self._recent: deque[float] = deque(maxlen=self.trend_window)
+
     def reset(self) -> None:
-        return None
+        self._recent.clear()
 
     def on_event(self, state: dict[str, Any]) -> Order | None:
         p = float(state["yes_price"])
-        if p <= self.buy_yes_below:
+        self._recent.append(p)
+
+        if len(self._recent) < self.trend_window:
+            # Not enough history - fall back to plain threshold
+            if p <= self.buy_yes_below:
+                return Order(market_id=state["market_id"], side="yes", contracts=self.order_size, reason=self.name)
+            if p >= self.buy_no_above:
+                return Order(market_id=state["market_id"], side="no", contracts=self.order_size, reason=self.name)
+            return None
+
+        arr = np.array(self._recent)
+        trend = arr[-1] - arr[0]  # positive = upward trend
+
+        if p <= self.buy_yes_below and trend >= 0:
+            # Price is low AND trending up - good reversal signal
             return Order(market_id=state["market_id"], side="yes", contracts=self.order_size, reason=self.name)
+        if p >= self.buy_no_above and trend <= 0:
+            # Price is high AND trending down - good fade signal
+            return Order(market_id=state["market_id"], side="no", contracts=self.order_size, reason=self.name)
         return None
 
 
@@ -253,5 +276,5 @@ def default_strategy_registry() -> list[Strategy]:
         AsymmetricThreshold80Strategy(),
         AsymmetricThreshold85Strategy(),
         YesWiderNO80Strategy(),
-        YesOnlyStrategy(),
+        PriceUpTrendThresholdStrategy(),
     ]
