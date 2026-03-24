@@ -154,67 +154,51 @@ class TrendFilteredThresholdStrategy(Strategy):
 
 
 @dataclass
-class InformedFlowFilterStrategy(Strategy):
-    """Threshold entry with cooldown after large informed NO trades.
+class ExitOnReverseStrategy(Strategy):
+    """Buy YES when cheap; exit when price rises and signal reverses.
 
-    Mechanism: In thin prediction markets, a large trade with significant
-    downward price impact signals an informed NO buyer (someone who knows
-    the market will likely resolve NO). Buying YES immediately after such
-    a signal is wrong-sided. We add a per-market cooldown: after detecting
-    a large downward trade (size > threshold * recent_median AND price drop
-    > min_impact), skip YES buys for `cooldown` events in that market.
+    Mechanism: After buying YES at a cheap price (e.g., 0.30), if the market
+    moves significantly toward YES (price rises above 0.55), we've captured
+    most of the edge. Selling at 0.55 locks in ~0.25 profit per contract and
+    frees the capital to buy more cheap YES in other markets. This improves
+    capital efficiency — instead of tying up capital waiting for binary
+    resolution, we recycle it into new edges.
+    Also applies to NO side: exit NO position when price drops below 0.45.
     """
-    name: str = "informed_flow_filter"
+    name: str = "exit_on_reverse"
     buy_yes_below: float = 0.42
+    exit_yes_above: float = 0.55
     buy_no_above: float = 0.58
-    size_multiplier: float = 3.0
-    min_price_drop: float = 0.01
-    cooldown: int = 5
-    window: int = 20
+    exit_no_below: float = 0.45
     order_size: float = 1.0
 
-    def __post_init__(self) -> None:
-        self._prev_price: dict[str, float] = {}
-        self._sizes: dict[str, deque] = {}
-        self._cooldown_left: dict[str, int] = {}
-
     def reset(self) -> None:
-        self._prev_price.clear()
-        self._sizes.clear()
-        self._cooldown_left.clear()
+        return None
 
     def on_event(self, state: dict[str, Any]) -> Order | None:
-        mid = state["market_id"]
         p = float(state["yes_price"])
-        sz = float(state["size"])
+        pos_yes = float(state["position_yes_contracts"])
+        pos_no = float(state["position_no_contracts"])
 
-        if mid not in self._sizes:
-            self._sizes[mid] = deque(maxlen=self.window)
-            self._cooldown_left[mid] = 0
+        # Exit YES position if price has risen to profitable zone
+        if pos_yes > 0 and p >= self.exit_yes_above:
+            return Order(market_id=state["market_id"], side="yes",
+                         contracts=-pos_yes, reason=self.name)
 
-        self._sizes[mid].append(sz)
+        # Exit NO position if price has fallen to profitable zone
+        if pos_no > 0 and p <= self.exit_no_below:
+            return Order(market_id=state["market_id"], side="no",
+                         contracts=-pos_no, reason=self.name)
 
-        # Detect large informed downward trade
-        if mid in self._prev_price and len(self._sizes[mid]) >= 5:
-            price_drop = self._prev_price[mid] - p
-            median_sz = float(np.median(list(self._sizes[mid])))
-            if (price_drop >= self.min_price_drop and median_sz > 0
-                    and sz >= self.size_multiplier * median_sz):
-                self._cooldown_left[mid] = self.cooldown
-
-        self._prev_price[mid] = p
-
-        # Decrement cooldown
-        if self._cooldown_left.get(mid, 0) > 0:
-            self._cooldown_left[mid] -= 1
-
+        # Entry: buy YES when price is cheap
         if p <= self.buy_yes_below:
-            if self._cooldown_left.get(mid, 0) > 0:
-                return None  # Skip: large informed seller active
-            return Order(market_id=state["market_id"], side="yes", contracts=self.order_size, reason=self.name)
+            return Order(market_id=state["market_id"], side="yes",
+                         contracts=self.order_size, reason=self.name)
 
+        # Entry: buy NO when price is high
         if p >= self.buy_no_above:
-            return Order(market_id=state["market_id"], side="no", contracts=self.order_size, reason=self.name)
+            return Order(market_id=state["market_id"], side="no",
+                         contracts=self.order_size, reason=self.name)
 
         return None
 
@@ -225,6 +209,6 @@ def default_strategy_registry() -> list[Strategy]:
         MeanReversionStrategy(),
         OnlineLogisticLikeStrategy(),
         TrendFilteredThresholdStrategy(),
-        InformedFlowFilterStrategy(),
+        ExitOnReverseStrategy(),
     ]
 
