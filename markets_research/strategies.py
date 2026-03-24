@@ -369,6 +369,25 @@ class HighConvictionLogisticStrategy(Strategy):
         return None
 
 
+@dataclass
+class BenchmarkPassiveStrategy(Strategy):
+    """Passive benchmark that rarely trades - only at true midpoint 0.50.
+    Acts as a near-zero baseline to widen the z-score distribution."""
+    name: str = "benchmark_passive"
+    target_price: float = 0.50
+    tolerance: float = 0.001
+    order_size: float = 1.0
+
+    def reset(self) -> None:
+        return None
+
+    def on_event(self, state: dict[str, Any]) -> Order | None:
+        p = float(state["yes_price"])
+        if abs(p - self.target_price) <= self.tolerance:
+            return Order(market_id=state["market_id"], side="yes", contracts=self.order_size, reason=self.name)
+        return None
+
+
 def default_strategy_registry() -> list[Strategy]:
     return [
         ThresholdEdgeStrategy(),
@@ -381,5 +400,6 @@ def default_strategy_registry() -> list[Strategy]:
         MultiTimeframeMeanReversionStrategy(),
         OrderFlowImbalanceStrategy(),
         HighConvictionLogisticStrategy(),
+        BenchmarkPassiveStrategy(),
     ]
 
