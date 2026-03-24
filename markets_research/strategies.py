@@ -163,49 +163,37 @@ class LargeTradeFollowerStrategy(Strategy):
 
 
 @dataclass
-class StableMarketThresholdStrategy(Strategy):
-    """Threshold strategy that only trades in low-volatility markets.
+class GlobalSequenceGatedStrategy(Strategy):
+    """Threshold strategy gated on global cross-market sequence state.
 
-    Mechanism: Losses in threshold_edge come from latency-induced adverse execution —
-    signal fires at YES=0.42, then price jumps to YES=0.70 before execution → loss.
-    Markets with high recent price range (volatile) are prone to these jumps.
-    By only trading when the market has been stable (narrow price range recently),
-    we avoid adverse fills and improve the win rate and sharpe.
+    Mechanism: The backtest executes orders at the NEXT sequential row's price,
+    regardless of which market it's from. When a high-price market trades right after
+    a YES buy signal, the order executes at that high price → loss. By only placing
+    orders when the previous global event was also at a low price, execution is more
+    likely to happen at a low-price event (maintaining edge).
     """
 
-    name: str = "stable_market_threshold"
+    name: str = "global_sequence_gated"
     buy_yes_below: float = 0.42
     buy_no_above: float = 0.58
-    vol_window: int = 10
-    max_range: float = 0.08
+    gate_yes_below: float = 0.45  # only buy YES if last global price < this
+    gate_no_above: float = 0.55   # only buy NO if last global price > this
     order_size: float = 1.0
 
     def __post_init__(self) -> None:
-        self._market_prices: dict[str, deque] = {}
+        self._last_price: float = 0.5  # global last price across all markets
 
     def reset(self) -> None:
-        self._market_prices.clear()
+        self._last_price = 0.5
 
     def on_event(self, state: dict[str, Any]) -> Order | None:
-        mid = str(state["market_id"])
         p = float(state["yes_price"])
+        last_p = self._last_price
+        self._last_price = p  # update for next call
 
-        if mid not in self._market_prices:
-            self._market_prices[mid] = deque(maxlen=self.vol_window)
-        hist = self._market_prices[mid]
-        hist.append(p)
-
-        if len(hist) < self.vol_window:
-            return None
-
-        # Only trade in stable markets (low recent price range)
-        arr = np.array(hist, dtype=np.float64)
-        if (arr.max() - arr.min()) > self.max_range:
-            return None
-
-        if p <= self.buy_yes_below:
+        if p <= self.buy_yes_below and last_p <= self.gate_yes_below:
             return Order(market_id=state["market_id"], side="yes", contracts=self.order_size, reason=self.name)
-        if p >= self.buy_no_above:
+        if p >= self.buy_no_above and last_p >= self.gate_no_above:
             return Order(market_id=state["market_id"], side="no", contracts=self.order_size, reason=self.name)
         return None
 
@@ -216,6 +204,6 @@ def default_strategy_registry() -> list[Strategy]:
         MeanReversionStrategy(),
         OnlineLogisticLikeStrategy(),
         LargeTradeFollowerStrategy(),
-        StableMarketThresholdStrategy(),
+        GlobalSequenceGatedStrategy(),
     ]
 
