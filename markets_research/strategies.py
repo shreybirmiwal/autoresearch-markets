@@ -106,61 +106,46 @@ class OnlineLogisticLikeStrategy(Strategy):
 
 
 @dataclass
-class DualMeanReversionStrategy(Strategy):
-    """Two-speed mean reversion: buy YES when both short/long windows say price is low.
-    Also includes exit logic when price recovers to mean."""
-    name: str = "dual_mean_reversion"
-    short_window: int = 10
-    long_window: int = 100
-    z_entry: float = 1.0
+class ThresholdEdgeWithExitStrategy(Strategy):
+    """Like ThresholdEdgeStrategy but with exit logic to recycle capital."""
+    name: str = "threshold_edge_exit"
+    buy_yes_below: float = 0.42
+    buy_no_above: float = 0.58
+    exit_yes_above: float = 0.55  # exit yes positions when price recovers
+    exit_no_below: float = 0.45  # exit no positions when price falls
     order_size: float = 1.0
 
     def __post_init__(self) -> None:
-        self._short_hist: deque[float] = deque(maxlen=self.short_window)
-        self._long_hist: deque[float] = deque(maxlen=self.long_window)
-        self._position: dict[str, str] = {}  # market_id -> 'yes' or 'no'
+        self._yes_pos: dict[str, float] = {}
+        self._no_pos: dict[str, float] = {}
 
     def reset(self) -> None:
-        self._short_hist.clear()
-        self._long_hist.clear()
-        self._position.clear()
+        self._yes_pos.clear()
+        self._no_pos.clear()
 
     def on_event(self, state: dict[str, Any]) -> Order | None:
         p = float(state["yes_price"])
         mid = state["market_id"]
-        self._short_hist.append(p)
-        self._long_hist.append(p)
 
-        if len(self._long_hist) < self.long_window:
-            return None
+        yes_pos = self._yes_pos.get(mid, 0.0)
+        no_pos = self._no_pos.get(mid, 0.0)
 
-        short_arr = np.array(self._short_hist, dtype=np.float64)
-        long_arr = np.array(self._long_hist, dtype=np.float64)
+        # Exit YES position when price has recovered
+        if yes_pos > 0 and p >= self.exit_yes_above:
+            self._yes_pos[mid] = 0.0
+            return Order(market_id=mid, side="yes", contracts=-yes_pos, reason=self.name)
 
-        short_std = short_arr.std()
-        long_std = long_arr.std()
-        if short_std <= 1e-9 or long_std <= 1e-9:
-            return None
+        # Exit NO position when price has fallen
+        if no_pos > 0 and p <= self.exit_no_below:
+            self._no_pos[mid] = 0.0
+            return Order(market_id=mid, side="no", contracts=-no_pos, reason=self.name)
 
-        short_z = (p - short_arr.mean()) / short_std
-        long_z = (p - long_arr.mean()) / long_std
-
-        pos = self._position.get(mid)
-
-        # Exit logic
-        if pos == "yes" and short_z >= 0 and long_z >= 0:
-            self._position.pop(mid)
-            return Order(market_id=mid, side="yes", contracts=-self.order_size, reason=self.name)
-        if pos == "no" and short_z <= 0 and long_z <= 0:
-            self._position.pop(mid)
-            return Order(market_id=mid, side="no", contracts=-self.order_size, reason=self.name)
-
-        # Entry: only if both windows agree price is significantly deviated
-        if short_z <= -self.z_entry and long_z <= -self.z_entry and pos != "yes":
-            self._position[mid] = "yes"
+        # Entry signals
+        if p <= self.buy_yes_below:
+            self._yes_pos[mid] = yes_pos + self.order_size
             return Order(market_id=mid, side="yes", contracts=self.order_size, reason=self.name)
-        if short_z >= self.z_entry and long_z >= self.z_entry and pos != "no":
-            self._position[mid] = "no"
+        if p >= self.buy_no_above:
+            self._no_pos[mid] = no_pos + self.order_size
             return Order(market_id=mid, side="no", contracts=self.order_size, reason=self.name)
 
         return None
@@ -171,6 +156,5 @@ def default_strategy_registry() -> list[Strategy]:
         ThresholdEdgeStrategy(),
         MeanReversionStrategy(),
         OnlineLogisticLikeStrategy(),
-        DualMeanReversionStrategy(),
+        ThresholdEdgeWithExitStrategy(),
     ]
-
