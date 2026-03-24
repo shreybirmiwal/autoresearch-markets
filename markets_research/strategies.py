@@ -287,6 +287,28 @@ class DeepValueOnlyStrategy(Strategy):
         return None
 
 
+@dataclass
+class BandedNoStrategy(Strategy):
+    """Buy NO only when YES price is in the 0.62-0.78 band (profitable NO range).
+    Avoids the >0.80 range (where yes36_no80 already trades) and the <0.62 range."""
+    name: str = "banded_no"
+    no_buy_low: float = 0.62   # YES price lower bound for NO buys
+    no_buy_high: float = 0.78  # YES price upper bound for NO buys
+    buy_yes_below: float = 0.36  # Also buy YES at low prices
+    order_size: float = 1.0
+
+    def reset(self) -> None:
+        return None
+
+    def on_event(self, state: dict[str, Any]) -> Order | None:
+        p = float(state["yes_price"])
+        if p <= self.buy_yes_below:
+            return Order(market_id=state["market_id"], side="yes", contracts=self.order_size, reason=self.name)
+        if self.no_buy_low <= p <= self.no_buy_high:
+            return Order(market_id=state["market_id"], side="no", contracts=self.order_size, reason=self.name)
+        return None
+
+
 def default_strategy_registry() -> list[Strategy]:
     return [
         ThresholdEdgeStrategy(),
@@ -295,5 +317,5 @@ def default_strategy_registry() -> list[Strategy]:
         MidThresholdStrategy(),
         AsymmetricThreshold80Strategy(),
         Yes36NO80Strategy(),
-        DeepValueOnlyStrategy(),
+        BandedNoStrategy(),
     ]
