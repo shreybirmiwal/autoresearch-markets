@@ -230,8 +230,111 @@ class HybridEdgeStrategy(Strategy):
         return None
 
 
+@dataclass
+class AdaptiveHoursEdgeStrategy(Strategy):
+    """Like HybridEdge but learns good hours from training data instead of hardcoding UTC 3-11.
+    Mechanism: fit() computes per-hour cheap event density; hours with above-median cheap density
+    become 'good hours' for extended buying. Adapts to fold-specific temporal patterns.
+    Retains rolling cheap-cluster signal as second condition.
+    """
+    name: str = "adaptive_hours_edge"
+    base_threshold: float = 0.45
+    extended_threshold: float = 0.58
+    rolling_window: int = 20
+    cheap_fraction_min: float = 0.40
+    order_size: float = 0.65
+    position_cap: float = 500.0
+
+    def reset(self) -> None:
+        self._market_sizes: dict[str, float] = {}
+        self._recent_prices: deque = deque(maxlen=self.rolling_window)
+        self._good_hours: set = set(range(3, 12))  # sensible default
+        return None
+
+    def _hour_of(self, ts: Any) -> int | None:
+        try:
+            return int(pd.Timestamp(ts).hour)
+        except Exception:
+            return None
+
+    def fit(self, train_events: list[dict[str, Any]]) -> None:
+        n = len(train_events)
+        window = train_events[n * 2 // 3:]
+
+        # Learn good hours: identify hours with above-median cheap event density
+        hour_total: dict[int, int] = defaultdict(int)
+        hour_cheap: dict[int, int] = defaultdict(int)
+        for event in window:
+            h = self._hour_of(event.get("event_ts"))
+            if h is not None:
+                hour_total[h] += 1
+                if float(event["price_yes"]) <= self.base_threshold:
+                    hour_cheap[h] += 1
+
+        hour_quality = {h: hour_cheap[h] / hour_total[h]
+                        for h in hour_total if hour_total[h] >= 20}
+        if len(hour_quality) >= 4:
+            median_q = sorted(hour_quality.values())[len(hour_quality) // 2]
+            self._good_hours = {h for h, q in hour_quality.items() if q >= median_q}
+        else:
+            self._good_hours = set(range(3, 12))  # fallback
+
+        # Count qualifying events per market (same logic as on_event)
+        recent: deque = deque(maxlen=self.rolling_window)
+        counts: dict[str, int] = defaultdict(int)
+        for event in window:
+            p = float(event["price_yes"])
+            ts = event.get("event_ts")
+            qualifies = False
+            if p <= self.base_threshold:
+                qualifies = True
+            elif p <= self.extended_threshold:
+                h = self._hour_of(ts)
+                if h is not None and h in self._good_hours:
+                    qualifies = True
+                elif len(recent) >= self.rolling_window:
+                    cheap_frac = sum(1 for rp in recent if rp <= self.base_threshold) / self.rolling_window
+                    if cheap_frac >= self.cheap_fraction_min:
+                        qualifies = True
+            if qualifies:
+                counts[str(event["market_id"])] += 1
+            recent.append(p)
+
+        self._market_sizes = {}
+        for market_id, count in counts.items():
+            if count >= 10:
+                optimal = self.position_cap / count
+                self._market_sizes[market_id] = max(0.01, min(self.order_size, optimal))
+
+    def on_event(self, state: dict[str, Any]) -> Order | None:
+        p = float(state["yes_price"])
+        ts = state.get("event_ts")
+        qualifies = False
+        if p <= self.base_threshold:
+            qualifies = True
+        elif p <= self.extended_threshold:
+            h = self._hour_of(ts)
+            if h is not None and h in self._good_hours:
+                qualifies = True
+            elif len(self._recent_prices) >= self.rolling_window:
+                cheap_frac = sum(1 for rp in self._recent_prices if rp <= self.base_threshold) / self.rolling_window
+                if cheap_frac >= self.cheap_fraction_min:
+                    qualifies = True
+        self._recent_prices.append(p)
+        if qualifies:
+            market_id = str(state["market_id"])
+            size = self._market_sizes.get(market_id, self.order_size)
+            return Order(
+                market_id=state["market_id"],
+                side="yes",
+                contracts=size,
+                reason=self.name,
+            )
+        return None
+
+
 def default_strategy_registry() -> list[Strategy]:
     return [
         HybridEdgeStrategy(),
-        ThresholdEdgeStrategy(buy_yes_below=0.55),
+        AdaptiveHoursEdgeStrategy(),
     ]
