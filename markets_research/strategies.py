@@ -247,6 +247,54 @@ class PercentileThresholdStrategy(Strategy):
         return None
 
 
+@dataclass
+class TrendAwareThresholdStrategy(Strategy):
+    """Learn per-market upward vs downward trend from training labels.
+    Only buy YES in markets with positive (upward) trend in training.
+    This avoids markets trending toward NO resolution."""
+    name: str = "trend_aware_threshold"
+    buy_yes_below: float = 0.36
+    buy_no_above: float = 0.80
+    min_up_fraction: float = 0.50  # need 50%+ up moves to trade YES in a market
+    order_size: float = 1.0
+
+    def __post_init__(self) -> None:
+        self._yes_markets: set = set()  # markets with positive trend
+
+    def reset(self) -> None:
+        self._yes_markets.clear()
+
+    def fit(self, train_events: list[dict[str, Any]]) -> None:
+        """Learn which markets are trending up from training labels."""
+        from collections import defaultdict
+        market_labels: dict = defaultdict(list)
+        for event in train_events:
+            mid = str(event.get("market_id", ""))
+            label = float(event.get("label", 0.5))
+            if label != 0.5:  # 0.5 is the default for missing/last-event labels
+                market_labels[mid].append(label)
+
+        for mid, labels in market_labels.items():
+            up_fraction = float(np.mean(labels))
+            if up_fraction >= self.min_up_fraction:
+                self._yes_markets.add(mid)
+
+    def on_event(self, state: dict[str, Any]) -> Order | None:
+        p = float(state["yes_price"])
+        mid = str(state["market_id"])
+
+        if p <= self.buy_yes_below:
+            # Only buy YES in markets with upward trend in training
+            if mid in self._yes_markets:
+                return Order(market_id=state["market_id"], side="yes", contracts=self.order_size, reason=self.name)
+            return None
+
+        if p >= self.buy_no_above:
+            return Order(market_id=state["market_id"], side="no", contracts=self.order_size, reason=self.name)
+
+        return None
+
+
 def default_strategy_registry() -> list[Strategy]:
     return [
         ThresholdEdgeStrategy(),
@@ -255,5 +303,5 @@ def default_strategy_registry() -> list[Strategy]:
         MidThresholdStrategy(),
         AsymmetricThreshold80Strategy(),
         Yes36NO80Strategy(),
-        PercentileThresholdStrategy(),
+        TrendAwareThresholdStrategy(),
     ]
