@@ -57,13 +57,22 @@ def run_backtest(
             executed_contracts = float(new_pos - current)
             if executed_contracts == 0:
                 continue
-            direction = "buy_yes" if order.side == "yes" else "buy_no"
-            exec_yes = mid + (cfg.slippage_bps / 10_000.0 if order.side == "yes" else -cfg.slippage_bps / 10_000.0)
+            # Slippage is always adverse: buys pay more, sells receive less.
+            # A sell is indicated by negative order.contracts (position reduction).
+            is_buy = order.contracts >= 0
+            slip = cfg.slippage_bps / 10_000.0
+            if order.side == "yes":
+                exec_yes = mid + (slip if is_buy else -slip)
+            else:
+                exec_yes = mid + (-slip if is_buy else slip)
             exec_yes = float(np.clip(exec_yes, 0.001, 0.999))
-            price_per_contract = _as_yes_price("yes" if direction == "buy_yes" else "no", exec_yes)
-            notional = executed_contracts * price_per_contract
+            price_per_contract = _as_yes_price(order.side, exec_yes)
+            notional = abs(executed_contracts) * price_per_contract
             fee = notional * (cfg.fee_bps / 10_000.0)
-            cash -= notional + fee
+            if is_buy:
+                cash -= notional + fee
+            else:
+                cash += notional - fee
             if order.side == "yes":
                 holdings_yes[order.market_id] = new_pos
             else:
@@ -73,7 +82,8 @@ def run_backtest(
                     "event_ts": row["event_ts"],
                     "market_id": order.market_id,
                     "ticker": row["ticker"],
-                    "side": "yes" if direction == "buy_yes" else "no",
+                    "side": order.side,
+                    # Positive = open/buy, negative = close/sell
                     "contracts": float(executed_contracts),
                     "exec_yes_price": exec_yes,
                     "fee": fee,

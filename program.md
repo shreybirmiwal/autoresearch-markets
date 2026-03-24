@@ -6,7 +6,7 @@ This is an experiment to have the LLM do its own research on prediction market t
 
 To set up a new experiment, work with the user to:
 
-1. **Agree on a run tag**: propose a tag based on today's date (e.g. `mar23`). The branch `autoresearch/<tag>` must not already exist — this is a fresh run.
+1. **Agree on a run tag**: propose a tag based on today's date plus a random 4-character hex suffix to avoid collisions (e.g. `mar23-a3f1`). Generate the suffix with `python3 -c "import secrets; print(secrets.token_hex(2))"`. The branch `autoresearch/<tag>` must not already exist — this is a fresh run.
 2. **Create the branch**: `git checkout -b autoresearch/<tag>` from current master.
 3. **Read the in-scope files**: Read these files for full context:
    - `README.md` — repository context and project overview.
@@ -25,10 +25,12 @@ To set up a new experiment, work with the user to:
 **Primary metric: `score`** (printed at the end of every run)
 
 ```
-score = 0.45 * z_final_pnl + 0.45 * z_sharpe + 0.10 * z_max_drawdown
+score = 0.45 * (sharpe / 20) + 0.45 * (final_pnl / 5000) + 0.10 * (1 + max_drawdown)
 ```
 
 Higher is better. Strategies with fewer than 10 trades or worse than -50% drawdown are filtered out.
+
+This is an **absolute** score — each strategy is scored against fixed reference values, not relative to other strategies in the registry. This means you **cannot improve the score by adding deliberately bad "baseline widener" strategies**. The only way to improve is to add a strategy that genuinely performs better.
 
 ## The one file you modify
 
@@ -36,6 +38,7 @@ Higher is better. Strategies with fewer than 10 trades or worse than -50% drawdo
 
 **What you CAN do:**
 - Add new `Strategy` subclasses with novel signal logic, entry/exit rules, thresholds, or combinations.
+- Add **exit logic**: strategies may emit an `Order` with negative `contracts` to reduce an existing position. The backtest handles sells correctly — slippage is applied adversely and cash is credited. Use this to recycle capital and avoid hitting the position cap.
 - Remove strategies that consistently underperform.
 - Simplify or refactor existing strategies if it produces equal or better results.
 
@@ -43,6 +46,11 @@ Higher is better. Strategies with fewer than 10 trades or worse than -50% drawdo
 - Modify `prepare.py`, `train.py`, or anything under `markets_research/` except `strategies.py`.
 - Install new packages or add dependencies beyond what's already in `pyproject.toml`.
 - Modify the scoring or evaluation logic.
+
+**Anti-patterns to avoid:**
+- **Baseline wideners**: adding strategies with deliberately poor performance to manipulate a relative score metric. The score is now absolute — this does nothing.
+- **Convergent signals**: all your new strategies converging to the same "buy YES at low price" logic as existing strategies. Check `report.json` for which contexts are already saturated.
+- **No exit logic**: strategies that only accumulate positions and never reduce them hit the position cap quickly and cannot recycle capital. Include exit conditions where your signal reverses.
 
 **Simplicity criterion**: All else being equal, simpler is better. A small improvement that adds ugly complexity is not worth it. Conversely, removing a strategy and maintaining score is a great outcome — that's a simplification win. A 0.001 score improvement that adds 50 lines of hacky code? Probably not worth it. A 0.001 improvement from deleting code? Definitely keep.
 
@@ -91,7 +99,7 @@ LOOP FOREVER:
 
 **Crashes**: If a run crashes, use your judgment. If it's something trivial (typo, missing import), fix it and re-run. If the idea is fundamentally broken, log it as `crash`, revert, and move on. Do not spin on the same broken idea for more than 2–3 attempts.
 
-**NEVER STOP**: Once the experiment loop has begun, do NOT pause to ask the human if you should continue. Do NOT ask "should I keep going?" or "is this a good stopping point?". The human might be asleep or away from their computer and expects you to continue working *indefinitely* until manually stopped. You are autonomous. If you run out of ideas, think harder — re-read `results/report.json` for new angles, try combining previous near-misses, try more radical signal logic. The loop runs until the human interrupts you, period.
+**NEVER STOP**: Once the experiment loop has begun, do NOT pause to ask the human if you should continue. Do NOT ask "should I keep going?" or "is this a good stopping point?" or "what should I try next?". The human is away from their computer and expects you to continue working *indefinitely* until manually interrupted. You are fully autonomous. If you run out of obvious ideas, think harder — re-read `results/report.json` for new angles, look at which price buckets and market contexts are underexplored, try combining near-misses, try position sizing, try exit logic. The loop runs forever. Never stop.
 
 As an example use case, a user might leave you running while they sleep. If each experiment takes ~3 minutes, you can run ~20/hour, for a total of ~160 experiments over the course of an average sleep. The user then wakes up to a leaderboard of results, all completed while they slept.
 

@@ -23,7 +23,7 @@ def compute_metrics(equity: pd.DataFrame, fills: pd.DataFrame) -> dict[str, floa
     drawdown = ((equity["equity"] - rolling_max) / rolling_max.replace(0.0, np.nan)).fillna(0.0)
     max_drawdown = float(drawdown.min())
     final_pnl = float(equity["equity"].iloc[-1] - equity["equity"].iloc[0])
-    turnover = float(fills["contracts"].sum()) if not fills.empty else 0.0
+    turnover = float(fills["contracts"].abs().sum()) if not fills.empty else 0.0
     num_trades = float(len(fills))
     hit_rate = 0.0
     if not fills.empty and "settle_yes" in fills.columns:
@@ -53,9 +53,18 @@ def rank_experiments(metrics_df: pd.DataFrame) -> pd.DataFrame:
         df = df[df["max_drawdown"] >= -0.5].copy()
     if df.empty:
         return df
-    for col in ["final_pnl", "sharpe", "max_drawdown"]:
-        std = float(df[col].std())
-        df[f"z_{col}"] = 0.0 if std <= 1e-12 else (df[col] - df[col].mean()) / std
-    df["score"] = 0.45 * df["z_final_pnl"] + 0.45 * df["z_sharpe"] + 0.10 * df["z_max_drawdown"]
+    # Absolute score: fixed reference values so adding "baseline widener" strategies
+    # cannot inflate the scores of good ones (unlike z-score normalization which is
+    # relative to the current registry).
+    #   sharpe / 20      — sharpe of 20 is excellent; scales to [0, 1] for typical range
+    #   final_pnl / 5000 — $5k profit on $10k starting capital is a strong result
+    #   1 + max_drawdown — drawdown is ≤ 0, so this maps it to [0, 1]
+    _SHARPE_REF = 20.0
+    _PNL_REF = 5_000.0
+    df["score"] = (
+        0.45 * df["sharpe"] / _SHARPE_REF
+        + 0.45 * df["final_pnl"] / _PNL_REF
+        + 0.10 * (1.0 + df["max_drawdown"])
+    )
     return df.sort_values("score", ascending=False).reset_index(drop=True)
 

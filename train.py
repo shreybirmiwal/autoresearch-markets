@@ -94,7 +94,7 @@ def main() -> None:
 
     print("\n--- result ---")
     print(f"best_strategy : {strategy_name}")
-    print(f"score         : {score:.4f}   (0.45*z_pnl + 0.45*z_sharpe + 0.10*z_drawdown)")
+    print(f"score         : {score:.4f}   (0.45*sharpe/20 + 0.45*pnl/5000 + 0.10*(1+drawdown))")
     print(f"final_pnl     : {pnl:.2f}")
     print(f"sharpe        : {sharpe:.4f}")
 
