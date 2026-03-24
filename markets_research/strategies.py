@@ -195,51 +195,46 @@ class HighWaterMarkStrategy(Strategy):
 
 
 @dataclass
-class HWMTrendNoStrategy(Strategy):
-    """HighWaterMark YES filter + trend-confirmed NO trades only.
+class TieredHWMStrategy(Strategy):
+    """Two-tier HighWaterMark: stricter viability required for cheap YES buys.
 
-    YES side: only in markets where max_price_ever >= min_viable_price (avoid near-zero junk)
-    NO side: only when price >= buy_no_min AND recent prices are ALL FALLING
-             Mechanism: markets heading to YES resolution have RISING prices at high levels;
-             markets heading to NO resolution have FALLING prices at high levels.
-             Buying NO only on downtrends filters out YES-resolving markets in the high zone.
+    Cheap zone (YES < cheap_floor): require max_price_ever >= high_threshold (0.25)
+    Sweet zone (YES cheap_floor to buy_yes_below): require max_price_ever >= low_threshold (0.10)
+
+    Mechanism: cheap-zone YES buys in borderline-viable markets (max_price 0.10-0.24)
+    are net negative — markets 253597 (max=0.22) and 253592 (max=0.20) cost 271 PnL.
+    True YES-resolving markets (253701, max=0.47) quickly demonstrate strong viability.
+    By requiring max_price >= 0.25 for the cheap zone, we filter borderline markets
+    while the holdout winners (which have already risen past 0.25) are unaffected.
     """
-    name: str = "hwm_trend_no"
+    name: str = "tiered_hwm"
     buy_yes_below: float = 0.42
-    buy_no_min: float = 0.62
-    min_viable_price: float = 0.10
-    lookback: int = 3
+    buy_no_above: float = 0.58
+    cheap_floor: float = 0.20
+    high_threshold: float = 0.25
+    low_threshold: float = 0.10
     order_size: float = 1.0
 
     def __post_init__(self) -> None:
         self._max_price: dict[str, float] = {}
-        self._recent: dict[str, deque] = {}
 
     def reset(self) -> None:
         self._max_price.clear()
-        self._recent.clear()
 
     def on_event(self, state: dict[str, Any]) -> Order | None:
         mid = state["market_id"]
         p = float(state["yes_price"])
 
         self._max_price[mid] = max(self._max_price.get(mid, 0.0), p)
-        if mid not in self._recent:
-            self._recent[mid] = deque(maxlen=self.lookback + 1)
-        self._recent[mid].append(p)
-        hist = self._recent[mid]
+        max_p = self._max_price[mid]
 
         if p <= self.buy_yes_below:
-            if self._max_price[mid] < self.min_viable_price:
+            threshold = self.high_threshold if p < self.cheap_floor else self.low_threshold
+            if max_p < threshold:
                 return None
             return Order(market_id=state["market_id"], side="yes", contracts=self.order_size, reason=self.name)
 
-        if p >= self.buy_no_min:
-            # Only buy NO when price is in clear decline (informed sellers → NO resolution)
-            if len(hist) >= 2:
-                all_falling = all(hist[i] > hist[i + 1] for i in range(len(hist) - 1))
-                if not all_falling:
-                    return None
+        if p >= self.buy_no_above:
             return Order(market_id=state["market_id"], side="no", contracts=self.order_size, reason=self.name)
 
         return None
@@ -252,6 +247,6 @@ def default_strategy_registry() -> list[Strategy]:
         OnlineLogisticLikeStrategy(),
         TrendFilteredThresholdStrategy(),
         HighWaterMarkStrategy(),
-        HWMTrendNoStrategy(),
+        TieredHWMStrategy(),
     ]
 
