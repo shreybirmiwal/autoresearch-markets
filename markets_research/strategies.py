@@ -227,6 +227,45 @@ class Yes36NO80Size2Strategy(Strategy):
         return None
 
 
+@dataclass
+class LogisticGatedThresholdStrategy(Strategy):
+    """Gate the yes36_no80 signal with an online logistic model.
+    Only buy YES when BOTH: price < 0.36 AND logistic predicts YES resolution.
+    Only buy NO when BOTH: price > 0.80 AND logistic predicts NO resolution."""
+    name: str = "logistic_gated_threshold"
+    buy_yes_below: float = 0.36
+    buy_no_above: float = 0.80
+    lr: float = 0.05
+    min_logistic_edge: float = 0.03  # logistic must predict at least 3pp above price
+    order_size: float = 1.0
+
+    def __post_init__(self) -> None:
+        self._w = np.zeros(3, dtype=np.float64)
+
+    def reset(self) -> None:
+        self._w[:] = 0.0
+
+    def fit(self, train_events: list[dict[str, Any]]) -> None:
+        for event in train_events:
+            px = float(event.get("yes_price", event.get("price_yes", 0.5)))
+            x = np.array([1.0, px, np.log1p(float(event["size"]))], dtype=np.float64)
+            y = float(event.get("label", 0.5))
+            pred = 1.0 / (1.0 + np.exp(-float(np.dot(self._w, x))))
+            grad = (pred - y) * x
+            self._w -= self.lr * grad
+
+    def on_event(self, state: dict[str, Any]) -> Order | None:
+        p = float(state["yes_price"])
+        x = np.array([1.0, p, np.log1p(float(state["size"]))], dtype=np.float64)
+        pred_yes = 1.0 / (1.0 + np.exp(-float(np.dot(self._w, x))))
+
+        if p <= self.buy_yes_below and pred_yes - p >= self.min_logistic_edge:
+            return Order(market_id=state["market_id"], side="yes", contracts=self.order_size, reason=self.name)
+        if p >= self.buy_no_above and p - pred_yes >= self.min_logistic_edge:
+            return Order(market_id=state["market_id"], side="no", contracts=self.order_size, reason=self.name)
+        return None
+
+
 def default_strategy_registry() -> list[Strategy]:
     return [
         ThresholdEdgeStrategy(),
@@ -235,5 +274,5 @@ def default_strategy_registry() -> list[Strategy]:
         MidThresholdStrategy(),
         AsymmetricThreshold80Strategy(),
         Yes36NO80Strategy(),
-        Yes36NO80Size2Strategy(),
+        LogisticGatedThresholdStrategy(),
     ]
