@@ -162,9 +162,11 @@ class EMACrossoverStrategy(Strategy):
         # Only trade on crossover
         if current_signal != self._prev_signal and self._prev_signal != 0:
             self._prev_signal = current_signal
-            if current_signal == 1:
+            # Guardrail: don't buy NO when price is very low (worst context)
+            # Don't buy YES when price is very high (bad context too)
+            if current_signal == 1 and p <= 0.80:
                 return Order(market_id=state["market_id"], side="yes", contracts=self.order_size, reason=self.name)
-            else:
+            elif current_signal == -1 and p >= 0.20:
                 return Order(market_id=state["market_id"], side="no", contracts=self.order_size, reason=self.name)
         self._prev_signal = current_signal
         return None
