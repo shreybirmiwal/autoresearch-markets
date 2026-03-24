@@ -355,6 +355,59 @@ class HybridThresholdLogisticStrategy(Strategy):
         return None
 
 
+@dataclass
+class MarketAdaptiveThresholdStrategy(Strategy):
+    """Per-market adaptive threshold: learn each market's price distribution
+    during training, then trade more aggressively in markets where YES<0.36 is
+    historically correlated with high future prices (mean reversion type)."""
+    name: str = "market_adaptive_threshold"
+    buy_yes_below: float = 0.36
+    buy_no_above: float = 0.80
+    order_size: float = 1.0
+
+    def __post_init__(self) -> None:
+        # market_id -> average price (learned from training)
+        self._market_avg_price: dict[str, float] = {}
+        self._market_price_std: dict[str, float] = {}
+
+    def reset(self) -> None:
+        self._market_avg_price.clear()
+        self._market_price_std.clear()
+
+    def fit(self, train_events: list[dict[str, Any]]) -> None:
+        """Learn per-market price statistics from training data."""
+        from collections import defaultdict
+        market_prices: dict = defaultdict(list)
+        for event in train_events:
+            mid = str(event.get("market_id", ""))
+            px = float(event.get("yes_price", event.get("price_yes", 0.5)))
+            market_prices[mid].append(px)
+
+        for mid, prices in market_prices.items():
+            arr = np.array(prices)
+            self._market_avg_price[mid] = float(arr.mean())
+            self._market_price_std[mid] = float(arr.std())
+
+    def on_event(self, state: dict[str, Any]) -> Order | None:
+        p = float(state["yes_price"])
+        mid = str(state["market_id"])
+
+        # Get market statistics
+        avg_price = self._market_avg_price.get(mid, 0.5)
+        price_std = self._market_price_std.get(mid, 0.15)
+
+        # Only trade markets with meaningful price variation (not stuck at one level)
+        if price_std < 0.05:
+            return None
+
+        # Standard threshold trades
+        if p <= self.buy_yes_below:
+            return Order(market_id=state["market_id"], side="yes", contracts=self.order_size, reason=self.name)
+        if p >= self.buy_no_above:
+            return Order(market_id=state["market_id"], side="no", contracts=self.order_size, reason=self.name)
+        return None
+
+
 def default_strategy_registry() -> list[Strategy]:
     return [
         ThresholdEdgeStrategy(),
@@ -363,5 +416,5 @@ def default_strategy_registry() -> list[Strategy]:
         MidThresholdStrategy(),
         AsymmetricThreshold80Strategy(),
         Yes36NO80Strategy(),
-        HybridThresholdLogisticStrategy(),
+        MarketAdaptiveThresholdStrategy(),
     ]
