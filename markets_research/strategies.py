@@ -163,60 +163,35 @@ class LargeTradeFollowerStrategy(Strategy):
 
 
 @dataclass
-class ConfirmationDriftStrategy(Strategy):
-    """Buy YES during upward price momentum in uncertain range.
+class ConfidenceScaledThresholdStrategy(Strategy):
+    """Threshold strategy with position sizing proportional to expected edge.
 
-    Mechanism: A market drifting steadily upward (N consecutive price increases)
-    in the 0.20-0.50 range is in confirmation drift — growing consensus about a
-    YES outcome. Buy during this momentum phase and exit when the drift ends
-    (take-profit or momentum reversal).
+    Mechanism: With settlement at ~0.5, expected edge per contract at YES price p is
+    (0.5 - p). Markets at YES=0.05 have 9x the edge per dollar vs YES=0.40.
+    Scaling contract size by inverse price (capped) allocates more capital to the
+    highest-edge opportunities, improving PnL without degrading win rate.
     """
 
-    name: str = "confirmation_drift"
-    momentum_window: int = 5
-    entry_min: float = 0.20
-    entry_max: float = 0.50
-    exit_take_profit: float = 0.75
-    exit_reversal_count: int = 3
-    order_size: float = 1.0
-
-    def __post_init__(self) -> None:
-        self._market_prices: dict[str, deque] = {}
+    name: str = "confidence_scaled_threshold"
+    buy_yes_below: float = 0.42
+    buy_no_above: float = 0.58
+    min_contracts: float = 0.5
+    max_contracts: float = 4.0
+    scale_factor: float = 0.30
 
     def reset(self) -> None:
-        self._market_prices.clear()
+        return None
 
     def on_event(self, state: dict[str, Any]) -> Order | None:
-        mid = str(state["market_id"])
         p = float(state["yes_price"])
-        pos_yes = float(state["position_yes_contracts"])
-
-        if mid not in self._market_prices:
-            self._market_prices[mid] = deque(maxlen=self.momentum_window + self.exit_reversal_count)
-        hist = self._market_prices[mid]
-
-        # Exit: take profit or momentum reversal
-        if pos_yes > 0:
-            hist.append(p)
-            if p >= self.exit_take_profit:
-                return Order(market_id=state["market_id"], side="yes", contracts=-pos_yes, reason=self.name)
-            # momentum reversal: last exit_reversal_count prices all declining
-            if len(hist) >= self.exit_reversal_count:
-                recent = list(hist)[-self.exit_reversal_count:]
-                if all(recent[i] > recent[i + 1] for i in range(len(recent) - 1)):
-                    return Order(market_id=state["market_id"], side="yes", contracts=-pos_yes, reason=self.name)
-            return None
-
-        hist.append(p)
-        if len(hist) < self.momentum_window:
-            return None
-
-        # Entry: last momentum_window prices all strictly increasing in target range
-        recent = list(hist)[-self.momentum_window:]
-        all_rising = all(recent[i] < recent[i + 1] for i in range(len(recent) - 1))
-        if all_rising and self.entry_min <= p <= self.entry_max:
-            return Order(market_id=state["market_id"], side="yes", contracts=self.order_size, reason=self.name)
-
+        if p <= self.buy_yes_below:
+            # More contracts when price is lower (higher edge)
+            n = float(np.clip(self.scale_factor / (p + 0.01), self.min_contracts, self.max_contracts))
+            return Order(market_id=state["market_id"], side="yes", contracts=n, reason=self.name)
+        if p >= self.buy_no_above:
+            no_price = 1.0 - p
+            n = float(np.clip(self.scale_factor / (no_price + 0.01), self.min_contracts, self.max_contracts))
+            return Order(market_id=state["market_id"], side="no", contracts=n, reason=self.name)
         return None
 
 
@@ -226,6 +201,6 @@ def default_strategy_registry() -> list[Strategy]:
         MeanReversionStrategy(),
         OnlineLogisticLikeStrategy(),
         LargeTradeFollowerStrategy(),
-        ConfirmationDriftStrategy(),
+        ConfidenceScaledThresholdStrategy(),
     ]
 
