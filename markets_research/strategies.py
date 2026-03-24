@@ -166,37 +166,43 @@ class Yes36NO80Strategy(Strategy):
 
 
 @dataclass
-class LowVolatilityThresholdStrategy(Strategy):
-    """YES<0.36, NO>0.80 but skip trading when price is highly volatile (3-event range > 15pp).
-    More permissive than 5pp - only avoids extreme jumps."""
-    name: str = "low_vol_threshold"
-    buy_yes_below: float = 0.36
-    buy_no_above: float = 0.80
-    vol_window: int = 3
-    max_range: float = 0.15  # skip if 3-event price range > 15pp (extreme jumps only)
+class MomentumReversalStrategy(Strategy):
+    """Momentum reversal: buy YES when price has been falling consistently,
+    buy NO when price has been rising consistently."""
+    name: str = "momentum_reversal"
+    window: int = 8
+    min_consecutive_moves: int = 5  # require 5 out of 7 moves in same direction
+    buy_yes_below: float = 0.50  # only reverse falling markets below 0.50
+    buy_no_above: float = 0.50  # only reverse rising markets above 0.50
     order_size: float = 1.0
 
     def __post_init__(self) -> None:
-        self._recent: deque[float] = deque(maxlen=self.vol_window)
+        self._history: deque[float] = deque(maxlen=self.window)
 
     def reset(self) -> None:
-        self._recent.clear()
+        self._history.clear()
 
     def on_event(self, state: dict[str, Any]) -> Order | None:
         p = float(state["yes_price"])
-        self._recent.append(p)
+        self._history.append(p)
 
-        # Check recent volatility
-        if len(self._recent) >= self.vol_window:
-            arr = np.array(self._recent)
-            recent_range = arr.max() - arr.min()
-            if recent_range > self.max_range:
-                return None  # Skip - extreme volatility, high execution risk
+        if len(self._history) < self.window:
+            return None
 
-        if p <= self.buy_yes_below:
+        arr = np.array(self._history)
+        moves = np.diff(arr)
+
+        falling_count = int((moves < 0).sum())
+        rising_count = int((moves > 0).sum())
+
+        # Strong falling trend at low price - buy YES (reversal)
+        if p <= self.buy_yes_below and falling_count >= self.min_consecutive_moves:
             return Order(market_id=state["market_id"], side="yes", contracts=self.order_size, reason=self.name)
-        if p >= self.buy_no_above:
+
+        # Strong rising trend at high price - buy NO (reversal)
+        if p >= self.buy_no_above and rising_count >= self.min_consecutive_moves:
             return Order(market_id=state["market_id"], side="no", contracts=self.order_size, reason=self.name)
+
         return None
 
 
@@ -208,5 +214,5 @@ def default_strategy_registry() -> list[Strategy]:
         MidThresholdStrategy(),
         AsymmetricThreshold80Strategy(),
         Yes36NO80Strategy(),
-        LowVolatilityThresholdStrategy(),
+        MomentumReversalStrategy(),
     ]
