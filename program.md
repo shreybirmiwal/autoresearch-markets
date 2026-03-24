@@ -79,24 +79,55 @@ status        : NO_IMPROVEMENT  (0.188 <= prev best 0.201)
 
 Results artifacts are written to: `results/leaderboard.csv`, `results/trade_attribution.csv`, `results/report.json`.
 
-## Strategy exploration map
+## Inventing new strategies
 
-Strategies fall into distinct **categories**. The biggest risk in autoresearch is converging on one category and micro-tuning it forever while ignoring the rest of the search space. Track which categories you've explored and force yourself to rotate.
+The biggest failure mode in autoresearch is **convergence**: every new strategy becomes a minor threshold tweak because the agent is pattern-matching to what it already knows. The antidote is to reason from the *market structure* first, then invent a mechanism, rather than picking from a mental menu of known strategy types.
 
-| Category | Description | Examples |
-|---|---|---|
-| **threshold-static** | Fixed price cutoffs to buy YES/NO | YES<0.36, NO>0.80 — the current best |
-| **threshold-exit** | Same but with explicit exit/reduce rules | exit when price reverts past midpoint |
-| **mean-reversion** | Signal based on deviation from rolling mean | z-score entry, z-score exit |
-| **momentum** | Trade in direction of recent price movement | buy YES when trending up fast |
-| **order-flow** | Signal based on trade size or trade direction patterns | follow large trades, fade small trades |
-| **price-region** | Different logic per price bucket (e.g. 0-0.2, 0.2-0.5) | aggressive in extremes, neutral in middle |
-| **position-sizing** | Variable bet size based on signal confidence | fractional Kelly, confidence-scaled contracts |
-| **market-context** | Filter or scale by per-market statistics | time-to-close, market liquidity, category |
-| **time-sequence** | Use the sequence/timing of events, not just current price | trade only after N consecutive moves in same direction |
-| **ensemble** | Combine signals from multiple sub-strategies with voting or averaging | only trade when threshold AND momentum agree |
+### Step 1: Ask first-principles questions about the data
 
-**Exploration rule**: Before each experiment, count how many consecutive `discard` rows you've logged. If **5 or more in a row** are from the same category (e.g. all threshold-static variants), you **must** pick a different category for your next experiment. Do not tune thresholds indefinitely.
+Before writing any code, sit with these questions and actually think through them:
+
+- **What is special about prediction markets vs stock markets?** They have binary resolution — price is literally a probability of a yes/no outcome. Near resolution, the price should converge to 0 or 1. What does that imply about when to trade and when to exit?
+- **What does trade SIZE tell you?** A large trade in a thin market moves price significantly. Who makes large trades — noise traders (random) or informed traders (have information)? If informed traders are more likely to trade large, what should you do after seeing a big YES buy at price 0.3?
+- **What does price VELOCITY tell you?** If price moves from 0.4 to 0.35 in 5 events, is that different from sitting at 0.35 all along? Momentum or mean-reversion — which fits this market?
+- **What happens as a market approaches its resolution date?** Does the edge from buying cheap YES get better or worse near the end? Does volatility increase? Does the bid-ask spread widen?
+- **What can you learn from the SEQUENCE of trades, not just the snapshot price?** e.g. three consecutive YES buys by different traders might signal growing consensus. Three consecutive NO buys might signal informed selling.
+- **Are there patterns within price buckets that the current strategy misses?** The current strategy treats all YES<0.36 identically. But is a market at 0.05 the same as one at 0.34? Maybe the 0.05 market is nearly resolved NO, while the 0.34 market is genuinely uncertain.
+- **What does the history of a SPECIFIC market tell you?** A market that started at 0.5 and drifted to 0.3 over 100 trades is different from one that opened at 0.3. Can you use per-market history?
+- **What can you infer from simultaneous price action in related markets?** (Harder — but if two markets are correlated, does one lead the other?)
+
+### Step 2: Generate a genuine mechanism
+
+A good mechanism has the form:
+> *"In situation X, the market price is systematically wrong because of dynamic Y, so doing Z should profit."*
+
+Examples of real mechanisms (not just category labels):
+- "Markets where price has been monotonically decreasing for the last 10 trades are in informed-seller flow; buying YES there bets against the trend and tends to lose. Skip them." (mechanism: informed flow)
+- "After a market resolves YES, the price has been drifting up in the last 20 events. Buying YES when price is in 0.3–0.5 AND the last 5 prices are all strictly increasing captures markets in late-stage confirmation drift." (mechanism: confirmation drift)
+- "A large single trade (size > 10x median) that moves price by >5pp signals an informed trader. Fade small trades in the opposite direction for the next 5 events." (mechanism: informed vs. noise trade distinction)
+- "Markets at YES<0.15 are often either nearly-resolved-NO or genuine longshots. Those that have been stuck near the same low price for 50+ events without resolution are likely longshots that occasionally resolve YES — overbet by the market." (mechanism: resolution lag)
+
+### Step 3: Sanity-check novelty
+
+Before coding, ask: **is this genuinely different from existing strategies, or is it just a threshold tweak?** If the answer is "I'm changing the threshold from 0.36 to 0.34", stop. Revert to step 1.
+
+Genuinely novel means: different *input signals*, different *timing logic*, different *per-market state*, or different *trade sequencing* — not just different numbers in the same formula.
+
+### Step 4: Coverage check (use sparingly)
+
+As a secondary check, make sure you've attempted each of these mechanism families at least once across your full run. This is a coverage floor, not a menu to pick from:
+
+- Price-only signal (static threshold) — done
+- Price history / rolling window signal — tried (mean reversion)
+- Trade-size signal — tried (large trade follower, briefly)
+- Per-market learned state — tried (online logistic)
+- Price velocity / trend direction — tried (trend-aware, briefly)
+- **Trade sequence / order flow patterns** — not tried well
+- **Confidence-scaled position sizing** (not just 1x or 2x flat) — not tried
+- **Exit logic tied to the entry signal reversing** — not tried well
+- **Near-resolution behavior** (e.g. scale down as market approaches 0 or 1) — not tried
+
+If you've been logging 5+ consecutive discards, you are stuck. Force yourself to pick something from the bottom half of that list and build a mechanism around it from step 1.
 
 ## Learning journal
 
