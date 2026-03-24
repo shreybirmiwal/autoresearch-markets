@@ -163,35 +163,50 @@ class LargeTradeFollowerStrategy(Strategy):
 
 
 @dataclass
-class ConfidenceScaledThresholdStrategy(Strategy):
-    """Threshold strategy with position sizing proportional to expected edge.
+class StableMarketThresholdStrategy(Strategy):
+    """Threshold strategy that only trades in low-volatility markets.
 
-    Mechanism: With settlement at ~0.5, expected edge per contract at YES price p is
-    (0.5 - p). Markets at YES=0.05 have 9x the edge per dollar vs YES=0.40.
-    Scaling contract size by inverse price (capped) allocates more capital to the
-    highest-edge opportunities, improving PnL without degrading win rate.
+    Mechanism: Losses in threshold_edge come from latency-induced adverse execution —
+    signal fires at YES=0.42, then price jumps to YES=0.70 before execution → loss.
+    Markets with high recent price range (volatile) are prone to these jumps.
+    By only trading when the market has been stable (narrow price range recently),
+    we avoid adverse fills and improve the win rate and sharpe.
     """
 
-    name: str = "confidence_scaled_threshold"
+    name: str = "stable_market_threshold"
     buy_yes_below: float = 0.42
     buy_no_above: float = 0.58
-    min_contracts: float = 0.5
-    max_contracts: float = 4.0
-    scale_factor: float = 0.30
+    vol_window: int = 10
+    max_range: float = 0.08
+    order_size: float = 1.0
+
+    def __post_init__(self) -> None:
+        self._market_prices: dict[str, deque] = {}
 
     def reset(self) -> None:
-        return None
+        self._market_prices.clear()
 
     def on_event(self, state: dict[str, Any]) -> Order | None:
+        mid = str(state["market_id"])
         p = float(state["yes_price"])
+
+        if mid not in self._market_prices:
+            self._market_prices[mid] = deque(maxlen=self.vol_window)
+        hist = self._market_prices[mid]
+        hist.append(p)
+
+        if len(hist) < self.vol_window:
+            return None
+
+        # Only trade in stable markets (low recent price range)
+        arr = np.array(hist, dtype=np.float64)
+        if (arr.max() - arr.min()) > self.max_range:
+            return None
+
         if p <= self.buy_yes_below:
-            # More contracts when price is lower (higher edge)
-            n = float(np.clip(self.scale_factor / (p + 0.01), self.min_contracts, self.max_contracts))
-            return Order(market_id=state["market_id"], side="yes", contracts=n, reason=self.name)
+            return Order(market_id=state["market_id"], side="yes", contracts=self.order_size, reason=self.name)
         if p >= self.buy_no_above:
-            no_price = 1.0 - p
-            n = float(np.clip(self.scale_factor / (no_price + 0.01), self.min_contracts, self.max_contracts))
-            return Order(market_id=state["market_id"], side="no", contracts=n, reason=self.name)
+            return Order(market_id=state["market_id"], side="no", contracts=self.order_size, reason=self.name)
         return None
 
 
@@ -201,6 +216,6 @@ def default_strategy_registry() -> list[Strategy]:
         MeanReversionStrategy(),
         OnlineLogisticLikeStrategy(),
         LargeTradeFollowerStrategy(),
-        ConfidenceScaledThresholdStrategy(),
+        StableMarketThresholdStrategy(),
     ]
 
