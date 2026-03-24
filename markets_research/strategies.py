@@ -106,11 +106,11 @@ class OnlineLogisticLikeStrategy(Strategy):
 
 
 @dataclass
-class TightThresholdStrategy(Strategy):
-    """Tighter threshold focusing on deep-value YES trades only (< 0.30)."""
-    name: str = "tight_threshold"
-    buy_yes_below: float = 0.30
-    buy_no_above: float = 0.70
+class MidThresholdStrategy(Strategy):
+    """Intermediate threshold between tight (0.30) and loose (0.42): 0.35/0.65."""
+    name: str = "mid_threshold"
+    buy_yes_below: float = 0.35
+    buy_no_above: float = 0.65
     order_size: float = 1.0
 
     def reset(self) -> None:
@@ -130,5 +130,5 @@ def default_strategy_registry() -> list[Strategy]:
         ThresholdEdgeStrategy(),
         MeanReversionStrategy(),
         OnlineLogisticLikeStrategy(),
-        TightThresholdStrategy(),
+        MidThresholdStrategy(),
     ]
