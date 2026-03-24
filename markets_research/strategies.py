@@ -194,6 +194,71 @@ class HighWaterMarkStrategy(Strategy):
         return None
 
 
+@dataclass
+class HWMSweetMRStrategy(Strategy):
+    """HWM cheap-zone YES + mean-reversion sweet-zone YES. No NO trades.
+
+    Mechanism: Two distinct YES-buying regimes:
+    1. Cheap zone (p < 0.42): HWM filter — only buy in markets that have ever
+       traded above min_viable_price=0.10, filtering out near-zero NO markets.
+    2. Sweet zone (0.42 < p < sweet_ceil): mean-reversion — buy YES when price
+       dips below its rolling mean by z_entry std dev. This captures markets like
+       253591 (YES resolver, price 0.59-0.71) which HWM entirely misses because
+       they never dip into the cheap zone. When 253591 briefly dips 1σ below its
+       mean of ~0.65, buying YES at 0.61-0.63 yields +0.37-0.39 per contract.
+
+    No NO trades: removes 253591 NO losses (-0.37 avg) and 252294 NO losses,
+    while sacrificing 253697 NO gains (+0.66 avg). Net fold NO removal is near-
+    neutral but eliminates distribution-shift risk.
+    """
+    name: str = "hwm_sweet_mr"
+    buy_yes_below: float = 0.42
+    sweet_ceil: float = 0.70
+    min_viable_price: float = 0.10
+    window: int = 30
+    z_entry: float = 0.8
+    order_size: float = 1.0
+
+    def __post_init__(self) -> None:
+        self._max_price: dict[str, float] = {}
+        self._history: dict[str, deque] = {}
+
+    def reset(self) -> None:
+        self._max_price.clear()
+        self._history.clear()
+
+    def on_event(self, state: dict[str, Any]) -> Order | None:
+        mid = state["market_id"]
+        p = float(state["yes_price"])
+
+        self._max_price[mid] = max(self._max_price.get(mid, 0.0), p)
+
+        if mid not in self._history:
+            self._history[mid] = deque(maxlen=self.window)
+        self._history[mid].append(p)
+
+        if p <= self.buy_yes_below:
+            # Cheap zone: HWM filter
+            if self._max_price[mid] < self.min_viable_price:
+                return None
+            return Order(market_id=state["market_id"], side="yes", contracts=self.order_size, reason=self.name)
+
+        if self.buy_yes_below < p < self.sweet_ceil:
+            # Sweet zone: mean-reversion YES signal
+            hist = self._history[mid]
+            if len(hist) < self.window:
+                return None
+            arr = np.array(hist, dtype=np.float64)
+            std = arr.std()
+            if std <= 1e-9:
+                return None
+            z = (p - arr.mean()) / std
+            if z <= -self.z_entry:
+                return Order(market_id=state["market_id"], side="yes", contracts=self.order_size, reason=self.name)
+
+        return None  # no NO trades
+
+
 def default_strategy_registry() -> list[Strategy]:
     return [
         ThresholdEdgeStrategy(),
@@ -201,5 +266,6 @@ def default_strategy_registry() -> list[Strategy]:
         OnlineLogisticLikeStrategy(),
         TrendFilteredThresholdStrategy(),
         HighWaterMarkStrategy(),
+        HWMSweetMRStrategy(),
     ]
 
