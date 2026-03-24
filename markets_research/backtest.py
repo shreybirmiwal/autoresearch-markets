@@ -43,12 +43,18 @@ def run_backtest(
     pending_orders: list[tuple[int, Order]] = []
     equity_rows: list[dict[str, float]] = []
     fills: list[dict[str, Any]] = []
+    last_known_price: dict[str, float] = {}
 
     for i, row in df.iterrows():
+        # Update last known price for the current row's market before executing orders
+        last_known_price[str(row["market_id"])] = float(row["price_yes"])
         to_execute = [entry for entry in pending_orders if entry[0] <= i]
         pending_orders = [entry for entry in pending_orders if entry[0] > i]
         for _, order in to_execute:
-            mid = float(row["price_yes"])
+            # Use the last known price for the order's market, not the current row's market.
+            # Without this, orders execute at whatever market happens to be next in the global
+            # sequence — cross-market price contamination that produces fictitious fill prices.
+            mid = last_known_price.get(str(order.market_id), float(row["price_yes"]))
             if order.side == "yes":
                 current = holdings_yes.get(order.market_id, 0.0)
             else:
