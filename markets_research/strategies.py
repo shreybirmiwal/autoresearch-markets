@@ -282,6 +282,55 @@ class ExitAwareBandedStrategy(Strategy):
         return None
 
 
+@dataclass
+class ConfirmationDriftYesStrategy(Strategy):
+    """Buy YES in late-stage confirmation drift: price rising in (0.28, 0.50] for 5+ events.
+    Mechanism (from prediction market research): markets that have been gradually rising
+    toward YES resolution show momentum confirmation. When price is in 0.3-0.5 AND
+    last 5 prices all strictly increasing, the market is in a YES convergence trajectory.
+    This differs from pure price-band (catches upward momentum not mean-reversion).
+    Exit at 0.70 (take profit before resolution convergence slows down).
+    """
+    name: str = "conf_drift_yes"
+    buy_yes_low: float = 0.28
+    buy_yes_high: float = 0.52
+    exit_above: float = 0.70
+    n_rises: int = 5
+    order_size: float = 1.0
+
+    def __post_init__(self) -> None:
+        self._market_prices: dict[str, deque] = {}
+
+    def reset(self) -> None:
+        self._market_prices.clear()
+
+    def on_event(self, state: dict[str, Any]) -> Order | None:
+        mid = state["market_id"]
+        p = float(state["yes_price"])
+        pos = float(state.get("position_yes_contracts", 0.0))
+
+        if mid not in self._market_prices:
+            self._market_prices[mid] = deque(maxlen=self.n_rises + 1)
+        prices = self._market_prices[mid]
+        prices.append(p)
+
+        # Exit: take profit
+        if pos > 0 and p >= self.exit_above:
+            return Order(market_id=mid, side="yes", contracts=-pos, reason=self.name + "_exit")
+
+        if len(prices) < self.n_rises + 1:
+            return None
+
+        # Check: last n_rises prices all strictly increasing
+        price_list = list(prices)
+        all_rising = all(price_list[i] < price_list[i+1] for i in range(len(price_list) - 1))
+
+        if all_rising and self.buy_yes_low < p <= self.buy_yes_high:
+            return Order(market_id=mid, side="yes", contracts=self.order_size, reason=self.name)
+
+        return None
+
+
 def default_strategy_registry() -> list[Strategy]:
     return [
         ThresholdEdgeStrategy(),
@@ -290,5 +339,6 @@ def default_strategy_registry() -> list[Strategy]:
         MeanReversionBandYesStrategy(),
         LocalMinBoostYesStrategy(),
         ExitAwareBandedStrategy(),
+        ConfirmationDriftYesStrategy(),
     ]
 
