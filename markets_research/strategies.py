@@ -154,39 +154,68 @@ class TrendFilteredThresholdStrategy(Strategy):
 
 
 @dataclass
-class YesOnlyMeanReversionStrategy(Strategy):
-    """Mean reversion on YES side only, never trade NO.
+class InformedFlowFilterStrategy(Strategy):
+    """Threshold entry with cooldown after large informed NO trades.
 
-    Mechanism: Standard mean reversion fires NO trades when price is
-    'too high' relative to local mean in (0.2-0.4] range, but these
-    markets are actually approaching YES resolution — the NO trades lose
-    badly (avg -0.50 pnl). By only trading the YES signal (price unusually
-    low vs mean), we capture the high-quality mean reversion entries
-    (avg +0.71 in (0.2, 0.4] bucket) without the catastrophic NO losses.
+    Mechanism: In thin prediction markets, a large trade with significant
+    downward price impact signals an informed NO buyer (someone who knows
+    the market will likely resolve NO). Buying YES immediately after such
+    a signal is wrong-sided. We add a per-market cooldown: after detecting
+    a large downward trade (size > threshold * recent_median AND price drop
+    > min_impact), skip YES buys for `cooldown` events in that market.
     """
-    name: str = "yes_only_mean_reversion"
-    window: int = 50
-    z_entry: float = 1.2
+    name: str = "informed_flow_filter"
+    buy_yes_below: float = 0.42
+    buy_no_above: float = 0.58
+    size_multiplier: float = 3.0
+    min_price_drop: float = 0.01
+    cooldown: int = 5
+    window: int = 20
     order_size: float = 1.0
 
     def __post_init__(self) -> None:
-        self._history: deque[float] = deque(maxlen=self.window)
+        self._prev_price: dict[str, float] = {}
+        self._sizes: dict[str, deque] = {}
+        self._cooldown_left: dict[str, int] = {}
 
     def reset(self) -> None:
-        self._history.clear()
+        self._prev_price.clear()
+        self._sizes.clear()
+        self._cooldown_left.clear()
 
     def on_event(self, state: dict[str, Any]) -> Order | None:
+        mid = state["market_id"]
         p = float(state["yes_price"])
-        self._history.append(p)
-        if len(self._history) < self.window:
-            return None
-        arr = np.array(self._history, dtype=np.float64)
-        std = arr.std()
-        if std <= 1e-9:
-            return None
-        z = (p - arr.mean()) / std
-        if z <= -self.z_entry:
+        sz = float(state["size"])
+
+        if mid not in self._sizes:
+            self._sizes[mid] = deque(maxlen=self.window)
+            self._cooldown_left[mid] = 0
+
+        self._sizes[mid].append(sz)
+
+        # Detect large informed downward trade
+        if mid in self._prev_price and len(self._sizes[mid]) >= 5:
+            price_drop = self._prev_price[mid] - p
+            median_sz = float(np.median(list(self._sizes[mid])))
+            if (price_drop >= self.min_price_drop and median_sz > 0
+                    and sz >= self.size_multiplier * median_sz):
+                self._cooldown_left[mid] = self.cooldown
+
+        self._prev_price[mid] = p
+
+        # Decrement cooldown
+        if self._cooldown_left.get(mid, 0) > 0:
+            self._cooldown_left[mid] -= 1
+
+        if p <= self.buy_yes_below:
+            if self._cooldown_left.get(mid, 0) > 0:
+                return None  # Skip: large informed seller active
             return Order(market_id=state["market_id"], side="yes", contracts=self.order_size, reason=self.name)
+
+        if p >= self.buy_no_above:
+            return Order(market_id=state["market_id"], side="no", contracts=self.order_size, reason=self.name)
+
         return None
 
 
@@ -196,6 +225,6 @@ def default_strategy_registry() -> list[Strategy]:
         MeanReversionStrategy(),
         OnlineLogisticLikeStrategy(),
         TrendFilteredThresholdStrategy(),
-        YesOnlyMeanReversionStrategy(),
+        InformedFlowFilterStrategy(),
     ]
 
