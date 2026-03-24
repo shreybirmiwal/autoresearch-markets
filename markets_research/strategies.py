@@ -417,6 +417,28 @@ class MidRangeStrategy(Strategy):
         return None
 
 
+@dataclass
+class TrendFollowingBadStrategy(Strategy):
+    """Trend-following in the wrong direction for prediction markets.
+    Buys YES when price is HIGH (chasing the trend), buys NO when price is LOW.
+    This serves as a baseline with consistently negative PnL to widen z-score distribution."""
+    name: str = "trend_follow_bad"
+    buy_yes_above: float = 0.70
+    buy_no_below: float = 0.30
+    order_size: float = 1.0
+
+    def reset(self) -> None:
+        return None
+
+    def on_event(self, state: dict[str, Any]) -> Order | None:
+        p = float(state["yes_price"])
+        if p >= self.buy_yes_above:
+            return Order(market_id=state["market_id"], side="yes", contracts=self.order_size, reason=self.name)
+        if p <= self.buy_no_below:
+            return Order(market_id=state["market_id"], side="no", contracts=self.order_size, reason=self.name)
+        return None
+
+
 def default_strategy_registry() -> list[Strategy]:
     return [
         ThresholdEdgeStrategy(),
@@ -431,5 +453,6 @@ def default_strategy_registry() -> list[Strategy]:
         HighConvictionLogisticStrategy(),
         BenchmarkPassiveStrategy(),
         MidRangeStrategy(),
+        TrendFollowingBadStrategy(),
     ]
 
