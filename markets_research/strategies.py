@@ -195,20 +195,20 @@ class HighWaterMarkStrategy(Strategy):
 
 
 @dataclass
-class HWMBoostStrategy(Strategy):
-    """YES-only HighWaterMark with high viability threshold — filters marginal losers.
+class HWMHighNoStrategy(Strategy):
+    """HighWaterMark with raised NO threshold (0.70).
 
-    Only buys YES in markets where max_price_ever >= min_viable_price (default 0.44).
-    No NO trading — avoids YES-resolving markets in the high zone.
-
-    Mechanism: threshold=0.44 is tuned to exclude market 253697 (max=0.43, resolves NO,
-    YES buys lose -192) while keeping 253701 (max=0.47, YES winner +1087) and 252294
-    (max=0.48, YES winner +388). Eliminates all near-zero and borderline-viable markets.
-    No NO trades avoids 253591 losses (-551, YES-resolving market always in high zone).
+    Mechanism: Markets like 253591 (YES resolver) generate large NO trade losses
+    because they trade in the 0.58–0.71 range. By requiring price >= 0.70 before
+    buying NO, we skip most of those trades. Markets like 253697 (NO resolver) still
+    trade above 0.70 (0.70–0.77 range), so we keep the profitable NO trades there.
+    Expected net: skip ~437 of the -551 NO losses in YES-resolver markets while
+    retaining ~177 of the +651 NO wins in the true NO-resolver.
     """
-    name: str = "hwm_boost"
+    name: str = "hwm_high_no"
     buy_yes_below: float = 0.42
-    min_viable_price: float = 0.44
+    buy_no_above: float = 0.70
+    min_viable_price: float = 0.10
     order_size: float = 1.0
 
     def __post_init__(self) -> None:
@@ -223,8 +223,13 @@ class HWMBoostStrategy(Strategy):
 
         self._max_price[mid] = max(self._max_price.get(mid, 0.0), p)
 
-        if p <= self.buy_yes_below and self._max_price[mid] >= self.min_viable_price:
+        if p <= self.buy_yes_below:
+            if self._max_price[mid] < self.min_viable_price:
+                return None
             return Order(market_id=state["market_id"], side="yes", contracts=self.order_size, reason=self.name)
+
+        if p >= self.buy_no_above:
+            return Order(market_id=state["market_id"], side="no", contracts=self.order_size, reason=self.name)
 
         return None
 
@@ -236,6 +241,6 @@ def default_strategy_registry() -> list[Strategy]:
         OnlineLogisticLikeStrategy(),
         TrendFilteredThresholdStrategy(),
         HighWaterMarkStrategy(),
-        HWMBoostStrategy(),
+        HWMHighNoStrategy(),
     ]
 
