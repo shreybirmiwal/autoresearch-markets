@@ -29,7 +29,6 @@ class Strategy(ABC):
 class ThresholdEdgeStrategy(Strategy):
     name: str = "threshold_edge"
     buy_yes_below: float = 0.42
-    buy_no_above: float = 0.58
     order_size: float = 1.0
 
     def reset(self) -> None:
@@ -39,8 +38,6 @@ class ThresholdEdgeStrategy(Strategy):
         p = float(state["yes_price"])
         if p <= self.buy_yes_below:
             return Order(market_id=state["market_id"], side="yes", contracts=self.order_size, reason=self.name)
-        if p >= self.buy_no_above:
-            return Order(market_id=state["market_id"], side="no", contracts=self.order_size, reason=self.name)
         return None
 
 
@@ -69,8 +66,6 @@ class MeanReversionStrategy(Strategy):
         z = (p - arr.mean()) / std
         if z <= -self.z_entry:
             return Order(market_id=state["market_id"], side="yes", contracts=self.order_size, reason=self.name)
-        if z >= self.z_entry:
-            return Order(market_id=state["market_id"], side="no", contracts=self.order_size, reason=self.name)
         return None
 
 
