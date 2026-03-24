@@ -156,7 +156,7 @@ class HybridEdgeStrategy(Strategy):
     good_hour_start: int = 3
     good_hour_end: int = 11
     rolling_window: int = 20
-    cheap_fraction_min: float = 0.20
+    cheap_fraction_min: float = 0.30
     order_size: float = 0.65
     position_cap: float = 500.0
 
