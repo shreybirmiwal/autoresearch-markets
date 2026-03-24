@@ -184,8 +184,10 @@ class MeanReversionBandYesStrategy(Strategy):
             return Order(market_id=mid, side="yes", contracts=-pos, reason=self.name + "_exit_mean")
 
         # Enter: price in profitable band AND below rolling mean
+        # Scale contracts with z-score depth: deeper signal = more conviction
         if self.buy_yes_low < p <= self.buy_yes_high and z <= -self.z_entry:
-            return Order(market_id=mid, side="yes", contracts=self.order_size, reason=self.name)
+            contracts = min(2.0, max(1.0, abs(z) / self.z_entry))
+            return Order(market_id=mid, side="yes", contracts=contracts, reason=self.name)
 
         return None
 
