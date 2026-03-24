@@ -172,6 +172,58 @@ class EMACrossoverStrategy(Strategy):
         return None
 
 
+@dataclass
+class RSIStrategy(Strategy):
+    """RSI-like overbought/oversold with price guardrail.
+    Buy YES when oversold (RSI < 30) and price < 0.50 (don't fight the trend at extremes).
+    Buy NO when overbought (RSI > 70) and price > 0.50."""
+    name: str = "rsi_strategy"
+    window: int = 14
+    oversold: float = 30.0
+    overbought: float = 70.0
+    order_size: float = 1.0
+
+    def __post_init__(self) -> None:
+        self._prices: deque[float] = deque(maxlen=self.window + 1)
+
+    def reset(self) -> None:
+        self._prices.clear()
+
+    def _compute_rsi(self) -> float | None:
+        if len(self._prices) < self.window + 1:
+            return None
+        prices = list(self._prices)
+        gains = []
+        losses = []
+        for i in range(1, len(prices)):
+            delta = prices[i] - prices[i - 1]
+            if delta > 0:
+                gains.append(delta)
+                losses.append(0.0)
+            else:
+                gains.append(0.0)
+                losses.append(-delta)
+        avg_gain = np.mean(gains) if gains else 0.0
+        avg_loss = np.mean(losses) if losses else 0.0
+        if avg_loss < 1e-9:
+            return 100.0
+        rs = avg_gain / avg_loss
+        return 100.0 - (100.0 / (1.0 + rs))
+
+    def on_event(self, state: dict[str, Any]) -> Order | None:
+        p = float(state["yes_price"])
+        self._prices.append(p)
+        rsi = self._compute_rsi()
+        if rsi is None:
+            return None
+        # Only trade when price context matches signal direction
+        if rsi < self.oversold and p < 0.50:
+            return Order(market_id=state["market_id"], side="yes", contracts=self.order_size, reason=self.name)
+        if rsi > self.overbought and p > 0.50:
+            return Order(market_id=state["market_id"], side="no", contracts=self.order_size, reason=self.name)
+        return None
+
+
 def default_strategy_registry() -> list[Strategy]:
     return [
         ThresholdEdgeStrategy(),
@@ -179,5 +231,6 @@ def default_strategy_registry() -> list[Strategy]:
         OnlineLogisticLikeStrategy(),
         ContraryExtremesStrategy(),
         EMACrossoverStrategy(),
+        RSIStrategy(),
     ]
 
