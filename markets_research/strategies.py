@@ -255,7 +255,7 @@ class ExitAwareBandedStrategy(Strategy):
     buy_yes_low: float = 0.20
     buy_yes_high: float = 0.42
     exit_yes_above: float = 0.60
-    buy_no_above: float = 0.70
+    buy_no_above: float = 0.75
     order_size: float = 1.0
 
     def reset(self) -> None:
