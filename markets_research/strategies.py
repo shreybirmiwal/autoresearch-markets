@@ -105,10 +105,36 @@ class OnlineLogisticLikeStrategy(Strategy):
         return None
 
 
+@dataclass
+class BandedThresholdStrategy(Strategy):
+    """Buy YES only in profitable mid-range (0.20-0.42), skip near-zero prices.
+    Buy NO only above 0.60, skip the uncertain 0.40-0.60 range.
+    Mechanism: YES < 0.20 markets are often near-resolved-NO (skip them).
+    NO in 0.40-0.60 is buying uncertainty with negative edge (skip them).
+    """
+    name: str = "banded_threshold"
+    yes_floor: float = 0.20
+    yes_ceil: float = 0.42
+    no_floor: float = 0.60
+    order_size: float = 1.0
+
+    def reset(self) -> None:
+        return None
+
+    def on_event(self, state: dict[str, Any]) -> Order | None:
+        p = float(state["yes_price"])
+        if self.yes_floor <= p <= self.yes_ceil:
+            return Order(market_id=state["market_id"], side="yes", contracts=self.order_size, reason=self.name)
+        if p >= self.no_floor:
+            return Order(market_id=state["market_id"], side="no", contracts=self.order_size, reason=self.name)
+        return None
+
+
 def default_strategy_registry() -> list[Strategy]:
     return [
         ThresholdEdgeStrategy(),
         MeanReversionStrategy(),
         OnlineLogisticLikeStrategy(),
+        BandedThresholdStrategy(),
     ]
 
