@@ -105,10 +105,32 @@ class OnlineLogisticLikeStrategy(Strategy):
         return None
 
 
+@dataclass
+class ContraryExtremesStrategy(Strategy):
+    """Buy YES at extreme lows (near 0), buy NO at extreme highs (near 1).
+    Focuses on the (-0.001, 0.2] and (0.8, 1.0] buckets which show highest avg PnL."""
+    name: str = "contrary_extremes"
+    yes_threshold: float = 0.20
+    no_threshold: float = 0.80
+    order_size: float = 1.0
+
+    def reset(self) -> None:
+        return None
+
+    def on_event(self, state: dict[str, Any]) -> Order | None:
+        p = float(state["yes_price"])
+        if p <= self.yes_threshold:
+            return Order(market_id=state["market_id"], side="yes", contracts=self.order_size, reason=self.name)
+        if p >= self.no_threshold:
+            return Order(market_id=state["market_id"], side="no", contracts=self.order_size, reason=self.name)
+        return None
+
+
 def default_strategy_registry() -> list[Strategy]:
     return [
         ThresholdEdgeStrategy(),
         MeanReversionStrategy(),
         OnlineLogisticLikeStrategy(),
+        ContraryExtremesStrategy(),
     ]
 
