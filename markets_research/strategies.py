@@ -168,7 +168,7 @@ class HighWaterMarkStrategy(Strategy):
     name: str = "high_water_mark"
     buy_yes_below: float = 0.42
     buy_no_above: float = 0.58
-    min_viable_price: float = 0.20
+    min_viable_price: float = 0.10
     order_size: float = 1.0
 
     def __post_init__(self) -> None:
@@ -194,6 +194,57 @@ class HighWaterMarkStrategy(Strategy):
         return None
 
 
+@dataclass
+class HWMTrendNoStrategy(Strategy):
+    """HighWaterMark YES filter + trend-confirmed NO trades only.
+
+    YES side: only in markets where max_price_ever >= min_viable_price (avoid near-zero junk)
+    NO side: only when price >= buy_no_min AND recent prices are ALL FALLING
+             Mechanism: markets heading to YES resolution have RISING prices at high levels;
+             markets heading to NO resolution have FALLING prices at high levels.
+             Buying NO only on downtrends filters out YES-resolving markets in the high zone.
+    """
+    name: str = "hwm_trend_no"
+    buy_yes_below: float = 0.42
+    buy_no_min: float = 0.62
+    min_viable_price: float = 0.10
+    lookback: int = 3
+    order_size: float = 1.0
+
+    def __post_init__(self) -> None:
+        self._max_price: dict[str, float] = {}
+        self._recent: dict[str, deque] = {}
+
+    def reset(self) -> None:
+        self._max_price.clear()
+        self._recent.clear()
+
+    def on_event(self, state: dict[str, Any]) -> Order | None:
+        mid = state["market_id"]
+        p = float(state["yes_price"])
+
+        self._max_price[mid] = max(self._max_price.get(mid, 0.0), p)
+        if mid not in self._recent:
+            self._recent[mid] = deque(maxlen=self.lookback + 1)
+        self._recent[mid].append(p)
+        hist = self._recent[mid]
+
+        if p <= self.buy_yes_below:
+            if self._max_price[mid] < self.min_viable_price:
+                return None
+            return Order(market_id=state["market_id"], side="yes", contracts=self.order_size, reason=self.name)
+
+        if p >= self.buy_no_min:
+            # Only buy NO when price is in clear decline (informed sellers → NO resolution)
+            if len(hist) >= 2:
+                all_falling = all(hist[i] > hist[i + 1] for i in range(len(hist) - 1))
+                if not all_falling:
+                    return None
+            return Order(market_id=state["market_id"], side="no", contracts=self.order_size, reason=self.name)
+
+        return None
+
+
 def default_strategy_registry() -> list[Strategy]:
     return [
         ThresholdEdgeStrategy(),
@@ -201,5 +252,6 @@ def default_strategy_registry() -> list[Strategy]:
         OnlineLogisticLikeStrategy(),
         TrendFilteredThresholdStrategy(),
         HighWaterMarkStrategy(),
+        HWMTrendNoStrategy(),
     ]
 
