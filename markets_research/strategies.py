@@ -203,6 +203,63 @@ class ConfidenceScaledBandedStrategy(Strategy):
         return None
 
 
+@dataclass
+class SizeFilteredBandedStrategy(Strategy):
+    """Buy YES in 0.20-0.42 with confidence scaling, but skip when a large trade
+    just pushed price DOWN (informed seller signal). Large downward price moves on
+    high volume = informed NO flow → avoid buying into that selling pressure.
+    Exit YES when price recovers above 0.55.
+    """
+    name: str = "size_filtered_banded"
+    yes_floor: float = 0.20
+    yes_ceil: float = 0.42
+    no_floor: float = 0.65
+    exit_yes_above: float = 0.55
+    max_contracts: float = 4.0
+    size_window: int = 30
+    size_multiplier: float = 4.0
+
+    def __post_init__(self) -> None:
+        self._market_sizes: dict = {}
+        self._market_last_price: dict = {}
+
+    def reset(self) -> None:
+        self._market_sizes.clear()
+        self._market_last_price.clear()
+
+    def on_event(self, state: dict[str, Any]) -> Order | None:
+        p = float(state["yes_price"])
+        sz = float(state["size"])
+        mid = state["market_id"]
+        pos_yes = float(state.get("position_yes_contracts", 0))
+
+        if mid not in self._market_sizes:
+            self._market_sizes[mid] = deque(maxlen=self.size_window)
+        sizes = self._market_sizes[mid]
+        last_p = self._market_last_price.get(mid, p)
+        sizes.append(sz)
+        self._market_last_price[mid] = p
+
+        # Exit YES when recovered
+        if pos_yes > 0 and p >= self.exit_yes_above:
+            return Order(market_id=mid, side="yes", contracts=-pos_yes, reason=self.name)
+
+        if self.yes_floor <= p <= self.yes_ceil:
+            # Skip if large trade just pushed price DOWN (informed seller signal)
+            if len(sizes) >= 5 and p < last_p:
+                median_sz = float(np.median(list(sizes)[:-1]))
+                if median_sz > 1e-9 and sz >= self.size_multiplier * median_sz:
+                    return None  # informed seller — skip
+            # Confidence-scaled entry
+            size = max(1.0, min(self.max_contracts, (0.50 - p) / 0.10))
+            return Order(market_id=mid, side="yes", contracts=size, reason=self.name)
+
+        if p >= self.no_floor:
+            return Order(market_id=mid, side="no", contracts=1.0, reason=self.name)
+
+        return None
+
+
 def default_strategy_registry() -> list[Strategy]:
     return [
         ThresholdEdgeStrategy(),
@@ -211,5 +268,6 @@ def default_strategy_registry() -> list[Strategy]:
         BandedThresholdStrategy(),
         ExitAwareBandedStrategy(),
         ConfidenceScaledBandedStrategy(),
+        SizeFilteredBandedStrategy(),
     ]
 
