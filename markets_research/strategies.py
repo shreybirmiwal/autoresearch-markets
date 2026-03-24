@@ -194,46 +194,6 @@ class HighWaterMarkStrategy(Strategy):
         return None
 
 
-@dataclass
-class HWMHighNoStrategy(Strategy):
-    """HighWaterMark with raised NO threshold (0.70).
-
-    Mechanism: Markets like 253591 (YES resolver) generate large NO trade losses
-    because they trade in the 0.58–0.71 range. By requiring price >= 0.70 before
-    buying NO, we skip most of those trades. Markets like 253697 (NO resolver) still
-    trade above 0.70 (0.70–0.77 range), so we keep the profitable NO trades there.
-    Expected net: skip ~437 of the -551 NO losses in YES-resolver markets while
-    retaining ~177 of the +651 NO wins in the true NO-resolver.
-    """
-    name: str = "hwm_high_no"
-    buy_yes_below: float = 0.42
-    buy_no_above: float = 0.70
-    min_viable_price: float = 0.10
-    order_size: float = 1.0
-
-    def __post_init__(self) -> None:
-        self._max_price: dict[str, float] = {}
-
-    def reset(self) -> None:
-        self._max_price.clear()
-
-    def on_event(self, state: dict[str, Any]) -> Order | None:
-        mid = state["market_id"]
-        p = float(state["yes_price"])
-
-        self._max_price[mid] = max(self._max_price.get(mid, 0.0), p)
-
-        if p <= self.buy_yes_below:
-            if self._max_price[mid] < self.min_viable_price:
-                return None
-            return Order(market_id=state["market_id"], side="yes", contracts=self.order_size, reason=self.name)
-
-        if p >= self.buy_no_above:
-            return Order(market_id=state["market_id"], side="no", contracts=self.order_size, reason=self.name)
-
-        return None
-
-
 def default_strategy_registry() -> list[Strategy]:
     return [
         ThresholdEdgeStrategy(),
@@ -241,6 +201,5 @@ def default_strategy_registry() -> list[Strategy]:
         OnlineLogisticLikeStrategy(),
         TrendFilteredThresholdStrategy(),
         HighWaterMarkStrategy(),
-        HWMHighNoStrategy(),
     ]
 
