@@ -105,9 +105,35 @@ class OnlineLogisticLikeStrategy(Strategy):
         return None
 
 
+@dataclass
+class FavoritesBuyStrategy(Strategy):
+    """Buy YES when the market prices the outcome as a moderate favourite (50-65c).
+    Motivated by calibration analysis showing these contracts resolve YES far more
+    often than their price implies (+$0.12 to +$0.25 edge per contract on average).
+    Also buys NO when yes_price is in 35-50c (equivalent: buying NO at 50-65c cost).
+    """
+    name: str = "favorites_buy"
+    yes_low: float = 0.50
+    yes_high: float = 0.65
+    order_size: float = 1.0
+
+    def reset(self) -> None:
+        return None
+
+    def on_event(self, state: dict[str, Any]) -> Order | None:
+        p = float(state["yes_price"])
+        if self.yes_low <= p <= self.yes_high:
+            return Order(market_id=state["market_id"], side="yes", contracts=self.order_size, reason=self.name)
+        # Mirror: buying NO at 35-50c yes_price = buying NO contract at 50-65c cost
+        if (1.0 - self.yes_high) <= p <= (1.0 - self.yes_low):
+            return Order(market_id=state["market_id"], side="no", contracts=self.order_size, reason=self.name)
+        return None
+
+
 def default_strategy_registry() -> list[Strategy]:
     return [
         ThresholdEdgeStrategy(),
+        FavoritesBuyStrategy(),
         MeanReversionStrategy(),
         OnlineLogisticLikeStrategy(),
     ]
